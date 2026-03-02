@@ -86,6 +86,7 @@ public class ClaudeHookControllerTests : IDisposable
             _enforcementService,
             triggerService,
             new ConsoleStatusService(_enforcementService),
+            new NullTrayService(),
             new NullNotificationService(),
             new PendingDecisionService(NullLogger<PendingDecisionService>.Instance),
             _mockLogger.Object);
@@ -128,6 +129,7 @@ public class ClaudeHookControllerTests : IDisposable
             enforcementSvc,
             triggerSvc,
             new ConsoleStatusService(enforcementSvc),
+            new NullTrayService(),
             new NullNotificationService(),
             new PendingDecisionService(NullLogger<PendingDecisionService>.Instance),
             _mockLogger.Object);

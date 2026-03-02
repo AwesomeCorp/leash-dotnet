@@ -5,7 +5,8 @@ namespace ClaudePermissionAnalyzer.Api.Services.Tray.Windows;
 
 /// <summary>
 /// Windows system tray icon using NotifyIcon on a dedicated STA thread.
-/// Shows context menu with Open Dashboard and mode display.
+/// Supports lazy start — can be constructed without starting, then started later.
+/// Uses a hidden helper form for reliable cross-thread marshaling.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public class WindowsTrayService : ITrayService
@@ -14,7 +15,9 @@ public class WindowsTrayService : ITrayService
     private readonly string _dashboardUrl;
     private Thread? _staThread;
     private System.Windows.Forms.NotifyIcon? _notifyIcon;
+    private System.Windows.Forms.Form? _marshalForm; // hidden form for reliable Invoke()
     private System.Windows.Forms.ApplicationContext? _appContext;
+    private volatile bool _started;
     private volatile bool _disposed;
 
     public WindowsTrayService(ILogger<WindowsTrayService> logger, string dashboardUrl)
@@ -23,10 +26,12 @@ public class WindowsTrayService : ITrayService
         _dashboardUrl = dashboardUrl;
     }
 
-    public bool IsAvailable => !_disposed && _notifyIcon != null;
+    public bool IsAvailable => _started && !_disposed && _notifyIcon != null;
 
     public Task StartAsync()
     {
+        if (_started || _disposed) return Task.CompletedTask;
+
         var tcs = new TaskCompletionSource();
 
         _staThread = new Thread(() =>
@@ -35,6 +40,17 @@ public class WindowsTrayService : ITrayService
             {
                 System.Windows.Forms.Application.EnableVisualStyles();
                 System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.SystemAware);
+
+                // Hidden form for reliable cross-thread marshaling
+                _marshalForm = new System.Windows.Forms.Form
+                {
+                    ShowInTaskbar = false,
+                    FormBorderStyle = System.Windows.Forms.FormBorderStyle.None,
+                    Size = new System.Drawing.Size(0, 0),
+                    Opacity = 0
+                };
+                _marshalForm.Show();
+                _marshalForm.Hide();
 
                 _notifyIcon = new System.Windows.Forms.NotifyIcon
                 {
@@ -69,6 +85,7 @@ public class WindowsTrayService : ITrayService
                 };
 
                 _appContext = new System.Windows.Forms.ApplicationContext();
+                _started = true;
                 tcs.TrySetResult();
                 System.Windows.Forms.Application.Run(_appContext);
             }
@@ -89,26 +106,21 @@ public class WindowsTrayService : ITrayService
 
     public void UpdateStatus(string status)
     {
-        if (_notifyIcon != null && !_disposed)
-        {
-            try
-            {
-                InvokeOnStaThread(() => _notifyIcon.Text = $"Claude Observer - {Truncate(status, 60)}");
-            }
-            catch { /* non-fatal */ }
-        }
-    }
-
-    /// <summary>
-    /// Shows a balloon tip notification near the system tray.
-    /// </summary>
-    public void ShowBalloonTip(string title, string text, System.Windows.Forms.ToolTipIcon icon, int timeoutMs = 5000)
-    {
-        if (_notifyIcon == null || _disposed) return;
-
+        if (!IsAvailable) return;
         try
         {
-            InvokeOnStaThread(() => _notifyIcon.ShowBalloonTip(timeoutMs, Truncate(title, 63), Truncate(text, 255), icon));
+            InvokeOnStaThread(() => _notifyIcon!.Text = $"Claude Observer - {Truncate(status, 60)}");
+        }
+        catch { /* non-fatal */ }
+    }
+
+    /// <summary>Shows a balloon tip notification near the system tray.</summary>
+    public void ShowBalloonTip(string title, string text, System.Windows.Forms.ToolTipIcon icon, int timeoutMs = 5000)
+    {
+        if (!IsAvailable) return;
+        try
+        {
+            InvokeOnStaThread(() => _notifyIcon!.ShowBalloonTip(timeoutMs, Truncate(title, 63), Truncate(text, 255), icon));
         }
         catch (Exception ex)
         {
@@ -116,22 +128,22 @@ public class WindowsTrayService : ITrayService
         }
     }
 
-    /// <summary>Marshals an action to the STA thread.</summary>
+    /// <summary>Marshals an action to the STA thread via the hidden helper form.</summary>
     internal void InvokeOnStaThread(Action action)
     {
-        if (_appContext == null) return;
+        if (!_started || _disposed) return;
 
-        // If we're already on the STA thread, run directly
+        // If already on the STA thread, run directly
         if (Thread.CurrentThread == _staThread)
         {
             action();
             return;
         }
 
-        // Marshal to the STA thread via a dummy control
-        if (_notifyIcon?.ContextMenuStrip != null && _notifyIcon.ContextMenuStrip.IsHandleCreated)
+        // Marshal via the hidden form (always has a valid handle)
+        if (_marshalForm != null && _marshalForm.IsHandleCreated)
         {
-            _notifyIcon.ContextMenuStrip.Invoke(action);
+            _marshalForm.Invoke(action);
         }
     }
 
@@ -142,12 +154,14 @@ public class WindowsTrayService : ITrayService
 
         try
         {
-            if (_notifyIcon != null)
+            if (_notifyIcon != null && _started)
             {
                 InvokeOnStaThread(() =>
                 {
                     _notifyIcon.Visible = false;
                     _notifyIcon.Dispose();
+                    _marshalForm?.Close();
+                    _marshalForm?.Dispose();
                 });
             }
             _appContext?.ExitThread();
@@ -160,15 +174,13 @@ public class WindowsTrayService : ITrayService
 
     private static System.Drawing.Icon CreateDefaultIcon()
     {
-        // Create a simple 16x16 icon with a blue circle
         using var bmp = new System.Drawing.Bitmap(16, 16);
         using var g = System.Drawing.Graphics.FromImage(bmp);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.Clear(System.Drawing.Color.Transparent);
-        using var brush = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(59, 130, 246)); // blue
+        using var brush = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(59, 130, 246));
         g.FillEllipse(brush, 1, 1, 14, 14);
         using var pen = new System.Drawing.Pen(System.Drawing.Color.White, 1.5f);
-        // Draw a check mark
         g.DrawLines(pen, new[] {
             new System.Drawing.Point(4, 8),
             new System.Drawing.Point(7, 11),

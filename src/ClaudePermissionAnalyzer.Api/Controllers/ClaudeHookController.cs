@@ -24,6 +24,7 @@ public class ClaudeHookController : ControllerBase
     private readonly EnforcementService _enforcementService;
     private readonly TriggerService _triggerService;
     private readonly ConsoleStatusService _consoleStatus;
+    private readonly ITrayService _trayService;
     private readonly INotificationService _notificationService;
     private readonly PendingDecisionService _pendingDecisionService;
     private readonly ILogger<ClaudeHookController> _logger;
@@ -37,6 +38,7 @@ public class ClaudeHookController : ControllerBase
         EnforcementService enforcementService,
         TriggerService triggerService,
         ConsoleStatusService consoleStatus,
+        ITrayService trayService,
         INotificationService notificationService,
         PendingDecisionService pendingDecisionService,
         ILogger<ClaudeHookController> logger)
@@ -49,6 +51,7 @@ public class ClaudeHookController : ControllerBase
         _enforcementService = enforcementService;
         _triggerService = triggerService;
         _consoleStatus = consoleStatus;
+        _trayService = trayService;
         _notificationService = notificationService;
         _pendingDecisionService = pendingDecisionService;
         _logger = logger;
@@ -336,6 +339,9 @@ public class ClaudeHookController : ControllerBase
         if (output.SafetyScore < trayConfig.InteractiveScoreMin || output.SafetyScore > trayConfig.InteractiveScoreMax)
             return null;
 
+        // Lazy-start tray service if not yet started
+        await EnsureTrayStartedAsync();
+
         try
         {
             var info = BuildNotificationInfo(output, input, NotificationLevel.Warning);
@@ -386,6 +392,20 @@ public class ClaudeHookController : ControllerBase
         }
     }
 
+    /// <summary>Lazily starts the tray service if not yet running.</summary>
+    private async Task EnsureTrayStartedAsync()
+    {
+        if (_trayService.IsAvailable) return;
+        try
+        {
+            await _trayService.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to lazy-start tray service");
+        }
+    }
+
     /// <summary>Fires a passive (non-interactive) notification for denied/uncertain events.</summary>
     private void ShowPassiveNotification(TrayConfig trayConfig, HookOutput output, HookInput input)
     {
@@ -401,10 +421,14 @@ public class ClaudeHookController : ControllerBase
         var level = isDenied ? NotificationLevel.Danger : NotificationLevel.Warning;
         var info = BuildNotificationInfo(output, input, level);
 
-        // Fire-and-forget (non-blocking)
+        // Fire-and-forget (non-blocking, lazy-start tray if needed)
         _ = Task.Run(async () =>
         {
-            try { await _notificationService.ShowAlertAsync(info); }
+            try
+            {
+                await EnsureTrayStartedAsync();
+                await _notificationService.ShowAlertAsync(info);
+            }
             catch { /* non-fatal */ }
         });
     }

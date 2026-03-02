@@ -7,18 +7,58 @@ namespace ClaudePermissionAnalyzer.Api.Controllers;
 /// <summary>
 /// Web dashboard fallback for pending tray decisions.
 /// Allows approve/reject from the browser when native tray notifications aren't available.
+/// Also provides start/stop control for the tray service.
 /// </summary>
 [ApiController]
 [Route("api/tray")]
 public class TrayController : ControllerBase
 {
+    private readonly ITrayService _trayService;
     private readonly PendingDecisionService _pendingService;
     private readonly ILogger<TrayController> _logger;
 
-    public TrayController(PendingDecisionService pendingService, ILogger<TrayController> logger)
+    public TrayController(ITrayService trayService, PendingDecisionService pendingService, ILogger<TrayController> logger)
     {
+        _trayService = trayService;
         _pendingService = pendingService;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Gets tray service status and lists pending decisions.
+    /// </summary>
+    [HttpGet("status")]
+    public IActionResult GetStatus()
+    {
+        return Ok(new
+        {
+            available = _trayService.IsAvailable,
+            serviceType = _trayService.GetType().Name,
+            pendingCount = _pendingService.GetPending().Count
+        });
+    }
+
+    /// <summary>
+    /// Starts the tray service (if not already running).
+    /// Call this after enabling tray in config without restarting.
+    /// </summary>
+    [HttpPost("start")]
+    public async Task<IActionResult> Start()
+    {
+        if (_trayService.IsAvailable)
+            return Ok(new { started = true, message = "Tray service already running" });
+
+        try
+        {
+            await _trayService.StartAsync();
+            _logger.LogInformation("Tray service started via API");
+            return Ok(new { started = true, available = _trayService.IsAvailable });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start tray service via API");
+            return StatusCode(500, new { error = ex.Message });
+        }
     }
 
     /// <summary>

@@ -197,13 +197,9 @@ builder.Services.AddSingleton<TriggerService>();
 // ---- System tray & native notifications (disabled by default) ----
 builder.Services.AddSingleton<PendingDecisionService>();
 
-// Platform-detected factory for ITrayService
+// Platform-detected factory for ITrayService (always register real service; enabled check is at call site)
 builder.Services.AddSingleton<ITrayService>(sp =>
 {
-    var trayConfig = config.Tray;
-    if (!trayConfig.Enabled)
-        return new NullTrayService();
-
 #if WINDOWS
     return new ClaudePermissionAnalyzer.Api.Services.Tray.Windows.WindowsTrayService(
         sp.GetRequiredService<ILogger<ClaudePermissionAnalyzer.Api.Services.Tray.Windows.WindowsTrayService>>(),
@@ -219,13 +215,9 @@ builder.Services.AddSingleton<ITrayService>(sp =>
 #endif
 });
 
-// Platform-detected factory for INotificationService
+// Platform-detected factory for INotificationService (always register real service)
 builder.Services.AddSingleton<INotificationService>(sp =>
 {
-    var trayConfig = config.Tray;
-    if (!trayConfig.Enabled)
-        return new NullNotificationService();
-
 #if WINDOWS
     var winTray = sp.GetRequiredService<ITrayService>() as ClaudePermissionAnalyzer.Api.Services.Tray.Windows.WindowsTrayService;
     if (winTray != null)
