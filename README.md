@@ -1,20 +1,20 @@
 # Leash
 
-A local service that monitors every tool call [Claude Code](https://docs.anthropic.com/en/docs/claude-code) makes, scores it for safety using an LLM, and gives you a real-time dashboard to see exactly what's happening. Keep Claude on a leash. Optionally, it can auto-approve or deny requests based on the safety score.
+A local service that monitors every tool call [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [GitHub Copilot](https://docs.github.com/en/copilot) make, scores them for safety using an LLM, and gives you a real-time dashboard to see exactly what's happening. Keep Claude and Copilot on a leash. Optionally, it can auto-approve or deny requests based on the safety score.
 
 ## Why
 
-Claude Code asks for permission before running commands, reading files, or making edits. When you're deep in a task, clicking "allow" dozens of times breaks your flow. But blindly auto-approving everything is risky.
+Claude Code and Copilot ask for permission before running commands, reading files, or making edits. When you're deep in a task, clicking "allow" dozens of times breaks your flow. But blindly auto-approving everything is risky.
 
-Leash sits in the middle: it intercepts every permission request, runs it through a safety analysis, and either logs it silently (observe mode) or makes the approve/deny decision for you (enforce mode). Either way, you get full visibility into what Claude is doing.
+Leash sits in the middle: it intercepts every permission request, runs it through a safety analysis, and either logs it silently (observe mode) or makes the approve/deny decision for you (enforce mode). Either way, you get full visibility into what your AI coding assistant is doing.
 
 ## How It Works
 
 ```
-Claude Code  -->  curl hook  -->  Leash  -->  LLM safety analysis  -->  decision
+Claude Code / Copilot  -->  curl hook  -->  Leash  -->  LLM safety analysis  -->  decision
 ```
 
-Hooks are lightweight `curl` commands injected into `~/.claude/settings.json`. When Claude Code triggers a tool call, the hook sends the request to the local service. The service scores it 0-100, categorizes it (safe/cautious/risky/dangerous), and either:
+Hooks are lightweight `curl` commands injected into the AI tool's settings file (`~/.claude/settings.json` for Claude, `.github/hooks/hooks.json` for Copilot). When a tool call is triggered, the hook sends the request to the local service. The service scores it 0-100, categorizes it (safe/cautious/risky/dangerous), and either:
 
 - **Observe mode** (default): Logs everything, returns no opinion. Claude asks you as normal.
 - **Approve-only mode**: Auto-approves safe requests, falls through to you on anything uncertain. Never denies.
@@ -33,7 +33,7 @@ dotnet run --project src/Leash.Api
 
 That's it. On startup the service:
 
-1. Installs hooks into `~/.claude/settings.json` automatically
+1. Installs hooks into Claude's `~/.claude/settings.json` automatically (Copilot hooks via dashboard)
 2. Starts at **http://localhost:5050** and opens the dashboard
 3. Prints an in-place status line showing live event counts and latency
 4. Optionally shows system tray notifications for uncertain decisions (enable with `tray.enabled` in config)
@@ -44,7 +44,7 @@ Use `--no-hooks` to skip hook installation, or `--enforce` to start in enforceme
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) and/or [GitHub Copilot CLI](https://docs.github.com/en/copilot) installed and authenticated
 - `curl` (ships with Windows 10+, macOS, and Linux)
 
 ## Dashboard
@@ -56,7 +56,7 @@ The web UI at `http://localhost:5050` has 8 pages:
 | **Dashboard** | Live stats, safety score charts, permission profiles, quick actions, hook controls |
 | **Live Logs** | Every hook event with multi-select filter chips, LLM reasoning, response JSON, export to CSV/JSON |
 | **Sessions** | Per-session timelines with event breakdowns and filter chips |
-| **Transcripts** | Browse Claude's conversation transcripts with SSE live streaming, markdown rendering |
+| **Transcripts** | Browse Claude's conversation transcripts with SSE live streaming, markdown rendering (Claude only — Copilot CLI does not write transcripts) |
 | **Prompt Editor** | Edit the LLM prompt templates that drive safety analysis |
 | **Configuration** | Hook handler management: matchers, modes, thresholds, prompt templates |
 | **Claude Settings** | Direct JSON editor for `~/.claude/settings.json` |
@@ -113,7 +113,7 @@ dotnet run --project src/Leash.Api -- --no-hooks # Start without installing hook
 
 ## How Hooks Work
 
-The service writes `curl` commands into `~/.claude/settings.json` tagged with a `# leash` marker:
+For Claude, the service writes `curl` commands into `~/.claude/settings.json` tagged with a `# leash` marker. For Copilot, equivalent hooks go into `.github/hooks/hooks.json`.
 
 ```json
 {
@@ -147,7 +147,7 @@ On shutdown, only hooks with the `# leash` marker are removed. Your own hooks ar
 | Backend | C# .NET 10, ASP.NET Core |
 | Hook Transport | `curl` |
 | Frontend | Vanilla HTML/CSS/JS (no CDN dependencies) |
-| LLM | Claude CLI subprocess |
+| LLM | Claude CLI, Copilot CLI, Anthropic API, or generic REST |
 | Storage | JSON files + MemoryCache |
 | Tests | xUnit + Moq (154 tests) |
 

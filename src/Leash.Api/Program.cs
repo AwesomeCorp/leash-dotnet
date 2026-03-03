@@ -103,6 +103,25 @@ var promptsDir = Path.Combine(
     ".leash",
     "prompts");
 
+// Seed default prompt templates if the prompts directory is empty
+if (!Directory.Exists(promptsDir))
+    Directory.CreateDirectory(promptsDir);
+if (Directory.GetFiles(promptsDir, "*.txt").Length == 0)
+{
+    var defaultPromptsDir = Path.Combine(AppContext.BaseDirectory, "prompts");
+    if (!Directory.Exists(defaultPromptsDir))
+        defaultPromptsDir = Path.Combine(Directory.GetCurrentDirectory(), "prompts");
+    if (Directory.Exists(defaultPromptsDir))
+    {
+        foreach (var file in Directory.GetFiles(defaultPromptsDir, "*.txt"))
+        {
+            var dest = Path.Combine(promptsDir, Path.GetFileName(file));
+            if (!File.Exists(dest))
+                File.Copy(file, dest);
+        }
+    }
+}
+
 // Register services with DI container
 builder.Services.AddSingleton(sp =>
 {
@@ -304,7 +323,7 @@ if (installCopilotHooks)
     if (!string.IsNullOrEmpty(copilotRepoPath))
         copilotHookInstaller.InstallRepo(copilotRepoPath);
     else
-        copilotHookInstaller.InstallUser();
+        copilotHookInstaller.InstallCwd();
     copilotHooksInstalledThisSession = true;
 }
 
@@ -343,7 +362,7 @@ lifetime.ApplicationStopping.Register(() =>
             if (!string.IsNullOrEmpty(copilotRepoPath))
                 copilotHookInstaller.UninstallRepo(copilotRepoPath);
             else
-                copilotHookInstaller.UninstallUser();
+                copilotHookInstaller.UninstallCwd();
             Console.WriteLine("Copilot hooks removed on shutdown.");
         }
         catch (Exception ex)

@@ -9,9 +9,14 @@ namespace Leash.Api.Controllers;
 public class CopilotSettingsController : ControllerBase
 {
     private readonly ILogger<CopilotSettingsController> _logger;
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".copilot",
+
+    /// <summary>
+    /// Returns the path to the Copilot hooks.json for the current working directory.
+    /// Copilot CLI reads hooks from .github/hooks/ in the project root.
+    /// </summary>
+    private static string GetSettingsPath() => Path.Combine(
+        Directory.GetCurrentDirectory(),
+        ".github",
         "hooks",
         "hooks.json");
 
@@ -25,18 +30,20 @@ public class CopilotSettingsController : ControllerBase
     {
         try
         {
-            if (!System.IO.File.Exists(SettingsPath))
-                return Ok(new { path = SettingsPath, exists = false, content = "{}" });
+            var settingsPath = GetSettingsPath();
+            if (!System.IO.File.Exists(settingsPath))
+                return Ok(new { path = settingsPath, exists = false, content = "{}" });
 
-            var json = System.IO.File.ReadAllText(SettingsPath);
+            var json = System.IO.File.ReadAllText(settingsPath);
             // Validate it's valid JSON
             JsonNode.Parse(json);
-            return Ok(new { path = SettingsPath, exists = true, content = json });
+            return Ok(new { path = settingsPath, exists = true, content = json });
         }
         catch (JsonException)
         {
-            var raw = System.IO.File.ReadAllText(SettingsPath);
-            return Ok(new { path = SettingsPath, exists = true, content = raw, parseError = true });
+            var settingsPath = GetSettingsPath();
+            var raw = System.IO.File.ReadAllText(settingsPath);
+            return Ok(new { path = settingsPath, exists = true, content = raw, parseError = true });
         }
         catch (Exception ex)
         {
@@ -66,14 +73,15 @@ public class CopilotSettingsController : ControllerBase
             // Pretty-print
             var pretty = parsed.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
 
-            var dir = Path.GetDirectoryName(SettingsPath);
+            var settingsPath = GetSettingsPath();
+            var dir = Path.GetDirectoryName(settingsPath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            System.IO.File.WriteAllText(SettingsPath, pretty);
+            System.IO.File.WriteAllText(settingsPath, pretty);
             _logger.LogInformation("Copilot hooks.json updated via web UI");
 
-            return Ok(new { saved = true, path = SettingsPath });
+            return Ok(new { saved = true, path = settingsPath });
         }
         catch (JsonException ex)
         {

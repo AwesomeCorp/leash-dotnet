@@ -375,6 +375,7 @@ async function loadSessionFilter() {
         var sessions = await fetchApi('/api/dashboard/sessions');
         if (!sessions || sessions.length === 0) return;
         sessions.forEach(function(s) {
+            if (!s.sessionId) return;
             var opt = document.createElement('option');
             opt.value = s.sessionId;
             opt.textContent = s.sessionId.substring(0, 12) + '...';

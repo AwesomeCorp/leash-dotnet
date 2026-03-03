@@ -57,12 +57,39 @@ public class CopilotHookInstaller
     }
 
     /// <summary>
+    /// Installs Copilot hooks for the current working directory.
+    /// Creates .github/hooks/ relative to the current directory.
+    /// This is the recommended way to install hooks for Copilot CLI.
+    /// </summary>
+    public void InstallCwd()
+    {
+        var hooksDir = Path.Combine(Directory.GetCurrentDirectory(), ".github", "hooks");
+        _logger.LogInformation("Installing Copilot hooks in current directory: {Path}", hooksDir);
+        InstallToDirectory(hooksDir);
+    }
+
+    /// <summary>
+    /// Uninstalls Copilot hooks from the current working directory.
+    /// </summary>
+    public void UninstallCwd()
+    {
+        var hooksDir = Path.Combine(Directory.GetCurrentDirectory(), ".github", "hooks");
+        _logger.LogInformation("Uninstalling Copilot hooks from current directory: {Path}", hooksDir);
+        UninstallFromDirectory(hooksDir);
+    }
+
+    /// <summary>
     /// Installs Copilot hooks at the user level (~/.copilot/hooks/).
+    /// Note: Copilot CLI only supports repo-level hooks (.github/hooks/).
+    /// User-level installation is provided as a convenience but may not be picked up by Copilot CLI.
+    /// Prefer InstallRepo() with the target repository path.
     /// </summary>
     public void InstallUser()
     {
         var hooksDir = GetUserHooksDir();
-        _logger.LogInformation("Installing Copilot hooks at user level: {Path}", hooksDir);
+        _logger.LogWarning("Installing Copilot hooks at user level ({Path}). " +
+            "Note: Copilot CLI only reads hooks from .github/hooks/ in the repository. " +
+            "Use --copilot-repo=<path> to install at the repo level instead.", hooksDir);
         InstallToDirectory(hooksDir);
     }
 
@@ -133,9 +160,20 @@ public class CopilotHookInstaller
                 var doc = JsonNode.Parse(json);
                 if (doc is JsonObject root)
                 {
+                    // Copilot spec: events are nested under root["hooks"]
+                    if (root["hooks"] is JsonObject hooksObj)
+                    {
+                        RemoveOurEntries(hooksObj);
+                        if (hooksObj.Count == 0)
+                            root.Remove("hooks");
+                    }
+
+                    // Also handle legacy flat format (no "hooks" wrapper)
                     RemoveOurEntries(root);
 
-                    if (root.Count == 0)
+                    // Delete file if only "version" remains (or empty)
+                    var hasContent = root.Any(kvp => kvp.Key != "version");
+                    if (!hasContent)
                         File.Delete(hooksJsonPath);
                     else
                         File.WriteAllText(hooksJsonPath, root.ToJsonString(s_writeOptions));
@@ -164,9 +202,10 @@ public class CopilotHookInstaller
             "#!/bin/bash\n" +
             ScriptMarker + "\n" +
             $"# Copilot CLI hook script for {eventName}\n" +
-            "# Sends stdin JSON to the Leash service\n" +
+            "# Reads JSON from stdin, sends to Leash service, outputs response\n" +
             "\n" +
-            $"curl -sS -X POST \"{_serviceUrl}/api/hooks/copilot?event={eventName}\" \\\n" +
+            "INPUT=$(cat)\n" +
+            $"echo \"$INPUT\" | curl -sS -X POST \"{_serviceUrl}/api/hooks/copilot?event={eventName}\" \\\n" +
             "  -H \"Content-Type: application/json\" \\\n" +
             "  -d @- 2>/dev/null || echo '{}'\n";
 
@@ -195,14 +234,14 @@ public class CopilotHookInstaller
         var content =
             ScriptMarker + "\n" +
             $"# Copilot CLI hook script for {eventName}\n" +
-            "# Sends stdin JSON to the Leash service\n" +
+            "# Reads JSON from stdin, sends to Leash service, outputs response\n" +
             "\n" +
             "try {\n" +
-            "    $input_data = $input | Out-String\n" +
+            "    $inputData = [Console]::In.ReadToEnd()\n" +
             $"    $response = Invoke-RestMethod -Uri \"{_serviceUrl}/api/hooks/copilot?event={eventName}\" `\n" +
             "        -Method POST `\n" +
             "        -ContentType \"application/json\" `\n" +
-            "        -Body $input_data `\n" +
+            "        -Body $inputData `\n" +
             "        -ErrorAction SilentlyContinue\n" +
             "    $response | ConvertTo-Json -Compress\n" +
             "} catch {\n" +
@@ -217,40 +256,50 @@ public class CopilotHookInstaller
         var hooksJsonPath = Path.Combine(hooksDir, "hooks.json");
 
         JsonObject root;
+        JsonObject hooksObj;
         if (File.Exists(hooksJsonPath))
         {
             try
             {
                 var existing = JsonNode.Parse(File.ReadAllText(hooksJsonPath));
                 root = existing?.AsObject() ?? new JsonObject();
-                RemoveOurEntries(root);
+                hooksObj = root["hooks"]?.AsObject() ?? new JsonObject();
+                RemoveOurEntries(hooksObj);
             }
             catch
             {
                 root = new JsonObject();
+                hooksObj = new JsonObject();
             }
         }
         else
         {
             root = new JsonObject();
+            hooksObj = new JsonObject();
         }
 
-        // Add our hook entries
+        // Add our hook entries per Copilot spec: { type, bash, powershell }
         foreach (var eventName in CopilotEvents)
         {
-            var eventArray = root[eventName]?.AsArray() ?? new JsonArray();
+            var eventArray = hooksObj[eventName]?.AsArray() ?? new JsonArray();
 
-            var bashEntry = new JsonObject
+            var bashPath = Path.Combine(hooksDir, $"{eventName}.sh").Replace('\\', '/');
+            var psPath = Path.Combine(hooksDir, $"{eventName}.ps1");
+
+            var entry = new JsonObject
             {
-                ["command"] = OperatingSystem.IsWindows()
-                    ? $"powershell -ExecutionPolicy Bypass -File \"{Path.Combine(hooksDir, $"{eventName}.ps1")}\""
-                    : $"bash \"{Path.Combine(hooksDir, $"{eventName}.sh")}\"",
+                ["type"] = "command",
+                ["bash"] = bashPath,
+                ["powershell"] = $"powershell -ExecutionPolicy Bypass -File \"{psPath}\"",
                 ["description"] = $"Leash - {eventName} {ScriptMarker}"
             };
 
-            eventArray.Add(bashEntry);
-            root[eventName] = eventArray;
+            eventArray.Add(entry);
+            hooksObj[eventName] = eventArray;
         }
+
+        root["version"] = 1;
+        root["hooks"] = hooksObj;
 
         File.WriteAllText(hooksJsonPath, root.ToJsonString(s_writeOptions));
     }
@@ -268,9 +317,9 @@ public class CopilotHookInstaller
         }
     }
 
-    private static void RemoveOurEntries(JsonObject root)
+    private static void RemoveOurEntries(JsonObject obj)
     {
-        foreach (var kvp in root.ToList())
+        foreach (var kvp in obj.ToList())
         {
             if (kvp.Value is not JsonArray arr) continue;
 
@@ -279,8 +328,12 @@ public class CopilotHookInstaller
             {
                 var desc = entry?["description"]?.GetValue<string>();
                 var cmd = entry?["command"]?.GetValue<string>();
+                var bash = entry?["bash"]?.GetValue<string>();
+                var ps = entry?["powershell"]?.GetValue<string>();
                 if ((desc != null && desc.Contains(ScriptMarker)) ||
-                    (cmd != null && cmd.Contains(ScriptMarker)))
+                    (cmd != null && cmd.Contains(ScriptMarker)) ||
+                    (bash != null && bash.Contains("api/hooks/copilot")) ||
+                    (ps != null && ps.Contains("api/hooks/copilot")))
                 {
                     if (entry != null)
                         toRemove.Add(entry);
@@ -291,7 +344,7 @@ public class CopilotHookInstaller
                 arr.Remove(node);
 
             if (arr.Count == 0)
-                root.Remove(kvp.Key);
+                obj.Remove(kvp.Key);
         }
     }
 

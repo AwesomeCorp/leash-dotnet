@@ -142,7 +142,7 @@
                 <div class="editor-toolbar">
                     <div>
                         <h2 style="margin:0;">Copilot Settings</h2>
-                        <div class="editor-path" id="settingsPath">~/.copilot/hooks/hooks.json</div>
+                        <div class="editor-path" id="settingsPath">.github/hooks/hooks.json</div>
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span class="editor-status" id="jsonStatus">Loading...</span>
@@ -346,7 +346,7 @@
                 pathEl.textContent = data.path;
 
                 if (!data.exists) {
-                    editor.value = '{}';
+                    editor.value = '{\n  "version": 1,\n  "hooks": {\n    "preToolUse": [],\n    "postToolUse": []\n  }\n}';
                     status.textContent = 'New file (will be created on save)';
                     status.className = 'editor-status status-missing';
                 } else if (data.parseError) {

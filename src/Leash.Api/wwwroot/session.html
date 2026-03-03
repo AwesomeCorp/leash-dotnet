@@ -126,7 +126,7 @@
                     return;
                 }
 
-                list.innerHTML = sessions.map(function(s) {
+                list.innerHTML = sessions.filter(function(s) { return s.sessionId; }).map(function(s) {
                     var start = new Date(s.startTime).toLocaleString();
                     var last = new Date(s.lastActivity).toLocaleString();
                     var events = s.eventCount || 0;
@@ -151,6 +151,7 @@
             return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
         function escapeAttr(str) {
+            if (!str) return '';
             return str.replace(/'/g,"\\'").replace(/"/g,'&quot;');
         }
 
