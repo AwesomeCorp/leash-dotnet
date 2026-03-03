@@ -22,16 +22,23 @@ Hooks are lightweight `curl` commands injected into the AI tool's settings file 
 
 Zero external dependencies beyond .NET and `curl`. No Python, no npm, no Docker.
 
-## Quick Start
+## One-Line Install
 
-```bash
-git clone https://github.com/shahab1363/leash.git
-cd leash
-dotnet build
-dotnet run --project src/Leash.Api
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/awesomecorp/leash.git && cd leash && dotnet run --project src\Leash.Api
 ```
 
-That's it. On startup the service:
+**macOS / Linux:**
+```bash
+git clone https://github.com/awesomecorp/leash.git && cd leash && dotnet run --project src/Leash.Api
+```
+
+Requires [.NET 10 SDK](https://dotnet.microsoft.com/download) and `curl`. That's it.
+
+## Quick Start
+
+On startup the service:
 
 1. Installs hooks into Claude's `~/.claude/settings.json` automatically (Copilot hooks via dashboard)
 2. Starts at **http://localhost:5050** and opens the dashboard
@@ -56,7 +63,7 @@ The web UI at `http://localhost:5050` has 8 pages:
 | **Dashboard** | Live stats, safety score charts, permission profiles, quick actions, hook controls |
 | **Live Logs** | Every hook event with multi-select filter chips, LLM reasoning, response JSON, export to CSV/JSON |
 | **Sessions** | Per-session timelines with event breakdowns and filter chips |
-| **Transcripts** | Browse Claude's conversation transcripts with SSE live streaming, markdown rendering (Claude only — Copilot CLI does not write transcripts) |
+| **Transcripts** | Browse Claude and Copilot session transcripts grouped by project folder, with SSE live streaming and markdown rendering |
 | **Prompt Editor** | Edit the LLM prompt templates that drive safety analysis |
 | **Configuration** | Hook handler management: matchers, modes, thresholds, prompt templates |
 | **Claude Settings** | Direct JSON editor for `~/.claude/settings.json` |
@@ -183,4 +190,4 @@ Uses `notify-send` (libnotify) for notifications and `zenity` for interactive di
 
 ## Releases
 
-CI builds self-contained binaries for Windows x64, Linux x64, macOS x64, and macOS ARM64. See the [Releases](https://github.com/shahab1363/leash/releases) page.
+CI builds self-contained binaries for Windows x64, Linux x64, macOS x64, and macOS ARM64. See the [Releases](https://github.com/awesomecorp/leash/releases) page.
