@@ -37,7 +37,7 @@ public class Configuration
 
 public class CopilotConfig
 {
-    public bool Enabled { get; set; } = false;
+    public bool Enabled { get; set; } = true;
     public Dictionary<string, HookEventConfig> HookHandlers { get; set; } = new();
 }
 

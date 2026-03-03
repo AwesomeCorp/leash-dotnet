@@ -229,6 +229,113 @@ function renderConfig(config) {
                         data-path="llm.genericRest.responsePath" aria-label="Response path">
                 </div>
             </div>
+
+            <div class="config-field" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 16px;">
+                <label class="config-label" for="cfg-system-prompt">
+                    System Prompt
+                    <small>System prompt sent to the LLM for safety analysis</small>
+                </label>
+                <textarea id="cfg-system-prompt" class="config-input" rows="4"
+                    data-path="llm.systemPrompt" aria-label="System prompt"
+                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.systemPrompt || '')}</textarea>
+            </div>
+            <div class="config-field">
+                <label class="config-label" for="cfg-prompt-prefix">
+                    Prompt Prefix
+                    <small>Text prepended before each hook analysis prompt</small>
+                </label>
+                <textarea id="cfg-prompt-prefix" class="config-input" rows="2"
+                    data-path="llm.promptPrefix" aria-label="Prompt prefix"
+                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.promptPrefix || '')}</textarea>
+            </div>
+            <div class="config-field">
+                <label class="config-label" for="cfg-prompt-suffix">
+                    Prompt Suffix
+                    <small>Text appended after each hook analysis prompt</small>
+                </label>
+                <textarea id="cfg-prompt-suffix" class="config-input" rows="2"
+                    data-path="llm.promptSuffix" aria-label="Prompt suffix"
+                    style="width: 350px; font-family: var(--font-mono); font-size: 12px;">${escapeHtml(config.llm?.promptSuffix || '')}</textarea>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Enforcement</h3>
+            <div class="config-field">
+                <label class="config-label" for="cfg-enforcement-mode">
+                    Enforcement Mode
+                    <small>How the service handles hook events</small>
+                </label>
+                <select id="cfg-enforcement-mode" class="config-input"
+                    data-path="enforcementMode" aria-label="Enforcement mode">
+                    <option value="observe" ${(config.enforcementMode || 'observe') === 'observe' ? 'selected' : ''}>Observe (log only, no decisions)</option>
+                    <option value="approve-only" ${config.enforcementMode === 'approve-only' ? 'selected' : ''}>Approve-Only (auto-approve safe, never deny)</option>
+                    <option value="enforce" ${config.enforcementMode === 'enforce' ? 'selected' : ''}>Enforce (approve or deny based on analysis)</option>
+                </select>
+            </div>
+            <div class="config-field">
+                <label class="config-label" for="cfg-analyze-observe">
+                    Analyze in Observe Mode
+                    <small>Run LLM analysis even in observe mode (shows scores in logs)</small>
+                </label>
+                <select id="cfg-analyze-observe" class="config-input"
+                    data-path="analyzeInObserveMode" data-type="bool" aria-label="Analyze in observe mode">
+                    <option value="true" ${config.analyzeInObserveMode !== false ? 'selected' : ''}>Yes</option>
+                    <option value="false" ${config.analyzeInObserveMode === false ? 'selected' : ''}>No</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Copilot Integration</h3>
+            <div class="config-field">
+                <label class="config-label" for="cfg-copilot-enabled">
+                    Copilot Enabled
+                    <small>Enable hook processing for GitHub Copilot CLI events</small>
+                </label>
+                <select id="cfg-copilot-enabled" class="config-input"
+                    data-path="copilot.enabled" data-type="bool" aria-label="Copilot enabled">
+                    <option value="true" ${config.copilot?.enabled !== false ? 'selected' : ''}>Enabled</option>
+                    <option value="false" ${config.copilot?.enabled === false ? 'selected' : ''}>Disabled</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Security</h3>
+            <div class="config-field">
+                <label class="config-label" for="cfg-security-apikey">
+                    API Key
+                    <small>Require X-Api-Key header for all API requests (leave empty to disable)</small>
+                </label>
+                <input id="cfg-security-apikey" class="config-input" type="password"
+                    value="${escapeAttr(config.security?.apiKey || '')}"
+                    placeholder="(no API key required)"
+                    data-path="security.apiKey" aria-label="Security API key"
+                    autocomplete="off">
+            </div>
+            <div class="config-field">
+                <label class="config-label" for="cfg-security-ratelimit">
+                    Rate Limit (req/min)
+                    <small>Maximum requests per minute per IP</small>
+                </label>
+                <input id="cfg-security-ratelimit" class="config-input" type="number"
+                    value="${config.security?.rateLimitPerMinute || 600}" min="10" max="10000"
+                    data-path="security.rateLimitPerMinute" aria-label="Rate limit per minute">
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Profiles</h3>
+            <div class="config-field">
+                <label class="config-label" for="cfg-active-profile">
+                    Active Profile
+                    <small>Permission profile controlling safety thresholds</small>
+                </label>
+                <input id="cfg-active-profile" class="config-input" type="text"
+                    value="${escapeAttr(config.profiles?.activeProfile || 'moderate')}"
+                    data-path="profiles.activeProfile" aria-label="Active profile">
+            </div>
         </div>
 
         <div class="config-section">
@@ -309,7 +416,7 @@ function renderConfig(config) {
                     <small>Max wait time for user response before falling through (max 25)</small>
                 </label>
                 <input id="cfg-tray-interactiveTimeout" class="config-input" type="number"
-                    value="${config.tray?.interactiveTimeoutSeconds || 25}" min="5" max="25"
+                    value="${config.tray?.interactiveTimeoutSeconds || 10}" min="5" max="25"
                     data-path="tray.interactiveTimeoutSeconds" aria-label="Interactive timeout">
             </div>
             <div class="config-field">
@@ -329,6 +436,24 @@ function renderConfig(config) {
                 <input id="cfg-tray-scoreMax" class="config-input" type="number"
                     value="${config.tray?.interactiveScoreMax || 85}" min="0" max="100"
                     data-path="tray.interactiveScoreMax" aria-label="Score max">
+            </div>
+        </div>
+
+        <div class="config-section">
+            <h3>Triggers (Webhooks)</h3>
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+                Fire HTTP webhooks on hook events. Configure trigger rules in the JSON config file.
+            </p>
+            <div class="config-field">
+                <label class="config-label" for="cfg-triggers-enabled">
+                    Triggers Enabled
+                    <small>Master switch for webhook triggers</small>
+                </label>
+                <select id="cfg-triggers-enabled" class="config-input"
+                    data-path="triggers.enabled" data-type="bool" aria-label="Triggers enabled">
+                    <option value="true" ${config.triggers?.enabled ? 'selected' : ''}>Enabled</option>
+                    <option value="false" ${!config.triggers?.enabled ? 'selected' : ''}>Disabled</option>
+                </select>
             </div>
         </div>
 
@@ -420,9 +545,15 @@ async function saveConfig() {
                 obj[key] = {};
             }
         } else {
-            obj[key] = input.value;
+            // Store empty strings as null for optional fields
+            obj[key] = input.value || null;
         }
     });
+
+    // Sync enforcementEnabled bool with enforcementMode
+    if (updated.enforcementMode) {
+        updated.enforcementEnabled = updated.enforcementMode === 'enforce' || updated.enforcementMode === 'approve-only';
+    }
 
     const btn = document.getElementById('saveConfigBtn');
     if (btn) {
@@ -524,6 +655,7 @@ function renderHandlerRow(eventType, handler, index, editing) {
         <div class="handler-row-details">
             <span class="handler-name" title="Handler name">${escapeHtml(handler.name || '(unnamed)')}</span>
             <span class="handler-mode-badge" style="background: ${badgeColor};" title="Mode">${escapeHtml(handler.mode || 'log-only')}</span>
+            <span class="handler-client-badge" title="Client: ${handler.client || 'all'}">${handler.client ? escapeHtml(handler.client) : 'all'}</span>
             <code class="handler-matcher" title="Matcher pattern: ${escapeAttr(handler.matcher || '*')}">${escapeHtml(handler.matcher || '*')}</code>
             <span class="handler-thresholds" title="Thresholds: Strict / Moderate / Permissive">S:<strong>${handler.thresholdStrict || 95}</strong> M:<strong>${handler.thresholdModerate || 85}</strong> P:<strong>${handler.thresholdPermissive || 70}</strong></span>
             ${handler.autoApprove ? '<span class="handler-auto-approve" title="Auto-approve enabled">Auto-approve</span>' : ''}
@@ -564,6 +696,14 @@ function renderHandlerEditRow(eventType, handler, index) {
                 <input type="text" id="${rowId}-matcher" value="${escapeAttr(handler.matcher || '')}"
                     placeholder="e.g. Bash|Write or *"
                     class="handler-edit-input handler-edit-input-mono">
+            </div>
+            <div>
+                <label class="handler-edit-label">Client</label>
+                <select id="${rowId}-client" class="handler-edit-input">
+                    <option value="" ${!handler.client ? 'selected' : ''}>All Clients</option>
+                    <option value="claude" ${handler.client === 'claude' ? 'selected' : ''}>Claude</option>
+                    <option value="copilot" ${handler.client === 'copilot' ? 'selected' : ''}>Copilot</option>
+                </select>
             </div>
             <div>
                 <label class="handler-edit-label">Mode</label>
@@ -619,6 +759,7 @@ function addHandler(eventType) {
     const newHandler = {
         name: '',
         matcher: '*',
+        client: null,
         mode: 'log-only',
         promptTemplate: '',
         threshold: 85,
@@ -675,6 +816,7 @@ function applyEditHandler(eventType, index) {
 
     const nameEl = document.getElementById(`${rowId}-name`);
     const matcherEl = document.getElementById(`${rowId}-matcher`);
+    const clientEl = document.getElementById(`${rowId}-client`);
     const modeEl = document.getElementById(`${rowId}-mode`);
     const promptEl = document.getElementById(`${rowId}-prompt`);
     const thresholdStrictEl = document.getElementById(`${rowId}-thresholdStrict`);
@@ -690,6 +832,7 @@ function applyEditHandler(eventType, index) {
 
     handler.name = nameEl.value.trim();
     handler.matcher = matcherEl.value.trim() || '*';
+    handler.client = clientEl.value || null;
     handler.mode = modeEl.value;
     handler.promptTemplate = promptEl.value || null;
     handler.thresholdStrict = parseInt(thresholdStrictEl?.value, 10) || 95;
@@ -761,7 +904,7 @@ async function saveHookHandlers() {
             var hooksStatus = await (await fetch('/api/hooks/status')).json();
             if (hooksStatus.installed) {
                 await fetch('/api/hooks/install', { method: 'POST' });
-                Toast.show('Hook Handlers Saved', 'Configuration saved and Claude hooks updated.', 'success');
+                Toast.show('Hook Handlers Saved', 'Configuration saved and hooks updated.', 'success');
             } else {
                 Toast.show('Hook Handlers Saved', 'Configuration saved. Install hooks from Dashboard to activate.', 'success');
             }

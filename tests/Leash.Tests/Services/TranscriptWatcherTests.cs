@@ -1,4 +1,5 @@
 using Leash.Api.Services;
+using Leash.Api.Services.Harness;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -12,7 +13,12 @@ public class TranscriptWatcherTests : IDisposable
     public TranscriptWatcherTests()
     {
         var mockLogger = new Mock<ILogger<TranscriptWatcher>>();
-        _watcher = new TranscriptWatcher(mockLogger.Object);
+        var registry = new HarnessClientRegistry(new IHarnessClient[]
+        {
+            new ClaudeHarnessClient(),
+            new CopilotHarnessClient()
+        });
+        _watcher = new TranscriptWatcher(registry, mockLogger.Object);
     }
 
     [Fact]

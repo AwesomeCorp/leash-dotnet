@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Claude Transcripts - Leash</title>
+    <title>Transcripts - Leash</title>
     <link rel="stylesheet" href="/css/styles.css">
     <style>
         .project-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
@@ -13,8 +13,16 @@
         }
         .project-card:hover { border-color: var(--accent-primary, #2563eb); }
         .project-card.active { border-color: var(--accent-primary, #2563eb); background: var(--accent-primary-bg, #eff6ff); }
-        .project-name { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #1a1a2e); }
+        .project-name { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #1a1a2e); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .project-meta { font-size: 0.8em; color: var(--text-muted, #666); margin-top: 4px; }
+        .project-path { font-size: 0.75em; color: var(--text-muted, #888); margin-top: 2px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge-claude { font-size: 0.65em; font-weight: 700; background: #d97706; color: #fff; padding: 1px 5px; border-radius: 3px; }
+        .badge-copilot { font-size: 0.65em; font-weight: 700; background: #1f6feb; color: #fff; padding: 1px 5px; border-radius: 3px; }
+        .badge-git { font-size: 0.65em; font-weight: 600; background: var(--bg-tertiary, #e5e7eb); color: var(--text-secondary, #555); padding: 1px 5px; border-radius: 3px; }
+        .badge-repo { font-size: 0.65em; font-weight: 600; background: var(--bg-tertiary, #e5e7eb); color: var(--text-secondary, #555); padding: 1px 5px; border-radius: 3px; }
+        .session-provider { font-size: 0.7em; font-weight: 700; padding: 1px 5px; border-radius: 3px; display: inline-block; }
+        .session-provider.claude { background: #d97706; color: #fff; }
+        .session-provider.copilot { background: #1f6feb; color: #fff; }
 
         .sessions-table { width: 100%; border-collapse: collapse; }
         .sessions-table th, .sessions-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border-color, #e0e0e0); color: var(--text-primary, #1a1a2e); }
@@ -151,15 +159,15 @@
             <!-- Project/Session Browser -->
             <section id="browserView">
                 <div class="card-header">
-                    <h2>Claude Session Transcripts</h2>
+                    <h2>Session Transcripts</h2>
                     <button class="btn btn-sm" onclick="loadProjects()">Refresh</button>
                 </div>
                 <p style="margin-bottom:16px;color:var(--text-secondary,#666);font-size:0.9em;">
-                    Browse Claude Code session transcripts from <code>~/.claude/projects/</code>.
+                    Browse Claude Code and Copilot CLI session transcripts grouped by project folder.
                 </p>
                 <div class="two-panel">
                     <div class="sidebar-panel">
-                        <h3 style="margin-bottom:8px;">Projects</h3>
+                        <h3 style="margin-bottom:8px;">Folders</h3>
                         <div id="projectList" class="project-list">
                             <div class="empty-state"><p>Loading projects...</p></div>
                         </div>
@@ -243,12 +251,12 @@
         async function loadProjects() {
             var list = document.getElementById('projectList');
             try {
-                var resp = await fetch('/api/claude-logs/projects');
+                var resp = await fetch('/api/transcripts/projects');
                 if (!resp.ok) throw new Error('Failed to load projects');
                 allProjects = await resp.json();
 
                 if (allProjects.length === 0) {
-                    list.innerHTML = '<div class="empty-state"><p>No Claude projects found</p></div>';
+                    list.innerHTML = '<div class="empty-state"><p>No projects found</p></div>';
                     return;
                 }
 
@@ -259,11 +267,27 @@
                 });
 
                 list.innerHTML = allProjects.map(function(p, i) {
-                    var sessionCount = (p.sessions || []).length;
-                    var totalSize = (p.sessions || []).reduce(function(sum, s) { return sum + (s.sizeBytes || 0); }, 0);
-                    var decoded = decodePath(p.name);
+                    var sessions = p.sessions || [];
+                    var sessionCount = sessions.length;
+                    var totalSize = sessions.reduce(function(sum, s) { return sum + (s.sizeBytes || 0); }, 0);
+                    var claudeCount = sessions.filter(function(s) { return s.provider === 'claude'; }).length;
+                    var copilotCount = sessions.filter(function(s) { return s.provider === 'copilot'; }).length;
+                    var folderPath = p.cwd || p.path || '';
+
+                    // Provider badges
+                    var badges = '';
+                    if (claudeCount > 0) badges += '<span class="badge-claude">CL ' + claudeCount + '</span>';
+                    if (copilotCount > 0) badges += '<span class="badge-copilot">CP ' + copilotCount + '</span>';
+
+                    // Git info badges
+                    var gitBadges = '';
+                    if (p.repository) gitBadges += '<span class="badge-repo" title="Repository">' + escapeHtml(p.repository) + '</span>';
+                    if (p.branch) gitBadges += '<span class="badge-git" title="Branch">&#9741; ' + escapeHtml(p.branch) + '</span>';
+
                     return '<div class="project-card" onclick="selectProject(' + i + ')" data-idx="' + i + '">' +
-                        '<div class="project-name" title="' + escapeHtml(decoded) + '">' + escapeHtml(p.name) + '</div>' +
+                        '<div class="project-name">' + escapeHtml(p.name) + ' ' + badges + '</div>' +
+                        (gitBadges ? '<div style="margin-top:3px;">' + gitBadges + '</div>' : '') +
+                        '<div class="project-path" title="' + escapeHtml(folderPath) + '">' + escapeHtml(folderPath) + '</div>' +
                         '<div class="project-meta">' + sessionCount + ' session' + (sessionCount !== 1 ? 's' : '') + ' &middot; ' + formatBytes(totalSize) + '</div>' +
                         '</div>';
                 }).join('');
@@ -282,15 +306,20 @@
             var table = document.getElementById('sessionTable');
 
             if (sessions.length === 0) {
-                table.innerHTML = '<div class="empty-state"><p>No sessions in this project</p></div>';
+                table.innerHTML = '<div class="empty-state"><p>No sessions in this folder</p></div>';
                 return;
             }
 
             table.innerHTML =
-                '<table class="sessions-table"><thead><tr><th>Session ID</th><th>Last Modified</th><th>Size</th></tr></thead><tbody>' +
+                '<table class="sessions-table"><thead><tr><th>Client</th><th>Session ID</th><th>Branch</th><th>Last Modified</th><th>Size</th></tr></thead><tbody>' +
                 sessions.map(function(s) {
+                    var providerClass = s.provider === 'copilot' ? 'copilot' : 'claude';
+                    var providerLabel = s.provider === 'copilot' ? 'Copilot' : 'Claude';
+                    var branch = s.branch || '';
                     return '<tr onclick="viewTranscript(\'' + escapeHtml(s.sessionId) + '\')">' +
+                        '<td><span class="session-provider ' + providerClass + '">' + providerLabel + '</span></td>' +
                         '<td style="font-family:monospace;font-size:0.85em;">' + escapeHtml(s.sessionId) + '</td>' +
+                        '<td style="font-size:0.85em;">' + escapeHtml(branch) + '</td>' +
                         '<td>' + new Date(s.lastModified).toLocaleString() + '</td>' +
                         '<td class="session-size">' + formatBytes(s.sizeBytes) + '</td>' +
                         '</tr>';
@@ -771,20 +800,30 @@
 
         // --- claude-trace inspired: role-based coloring ---
         function getRoleClass(type, role) {
-            if (type === 'user' || role === 'user') return 'role-user';
-            if (type === 'assistant' || role === 'assistant') return 'role-assistant';
-            if (type === 'tool_result') return 'role-tool';
-            if (type === 'system' || type === 'file-history-snapshot') return 'role-system';
-            if (type === 'progress' || type === 'hook_progress') return 'role-tool';
+            if (type === 'user' || role === 'user' || type === 'user.message') return 'role-user';
+            if (type === 'assistant' || role === 'assistant' || type === 'assistant.message') return 'role-assistant';
+            if (type === 'tool_result' || type === 'tool.execution_complete') return 'role-tool';
+            if (type === 'system' || type === 'file-history-snapshot' || type === 'session.info' || type === 'session.warning') return 'role-system';
+            if (type === 'progress' || type === 'hook_progress' || type === 'tool.execution_start' || type === 'assistant.turn_start' || type === 'assistant.turn_end') return 'role-tool';
+            if (type === 'session.start' || type === 'session.resume' || type === 'session.end' || type === 'session.task_complete') return 'role-system';
+            if (type === 'session.mode_changed' || type === 'session.plan_changed') return 'role-system';
+            if (type === 'session.compaction_start' || type === 'session.compaction_complete') return 'role-system';
+            if (type === 'subagent.started' || type === 'subagent.completed') return 'role-tool';
+            if (type === 'abort') return 'role-system';
             return '';
         }
 
         function getRoleBadgeClass(type, role) {
-            if (type === 'user' || role === 'user') return 'badge-user';
-            if (type === 'assistant' || role === 'assistant') return 'badge-assistant';
-            if (type === 'tool_result') return 'badge-tool';
-            if (type === 'system' || type === 'file-history-snapshot') return 'badge-system';
-            if (type === 'progress' || type === 'hook_progress') return 'badge-tool';
+            if (type === 'user' || role === 'user' || type === 'user.message') return 'badge-user';
+            if (type === 'assistant' || role === 'assistant' || type === 'assistant.message') return 'badge-assistant';
+            if (type === 'tool_result' || type === 'tool.execution_complete') return 'badge-tool';
+            if (type === 'system' || type === 'file-history-snapshot' || type === 'session.info' || type === 'session.warning') return 'badge-system';
+            if (type === 'progress' || type === 'hook_progress' || type === 'tool.execution_start' || type === 'assistant.turn_start' || type === 'assistant.turn_end') return 'badge-tool';
+            if (type === 'session.start' || type === 'session.resume' || type === 'session.end' || type === 'session.task_complete') return 'badge-system';
+            if (type === 'session.mode_changed' || type === 'session.plan_changed') return 'badge-system';
+            if (type === 'session.compaction_start' || type === 'session.compaction_complete') return 'badge-system';
+            if (type === 'subagent.started' || type === 'subagent.completed') return 'badge-tool';
+            if (type === 'abort') return 'badge-system';
             return '';
         }
 
@@ -808,10 +847,83 @@
 
             var contentHtml = '';
 
+            // Copilot tool events: render with enhanced tool blocks
+            if (entry.provider === 'copilot' && entry.data && typeof entry.data === 'object') {
+                if (type === 'tool.execution_start') {
+                    var td = entry.data;
+                    var toolName = td.toolName || 'unknown';
+                    var badge = '<span class="tool-name-badge">' + escapeHtml(toolName) + '</span>';
+                    var specialContent = '';
+                    var tn = toolName.toLowerCase();
+                    var args = typeof td.arguments === 'object' && td.arguments !== null ? td.arguments : {};
+
+                    if (tn === 'powershell' || tn === 'bash' || tn === 'execute') {
+                        if (args.command) specialContent = '<div class="bash-command">' + escapeHtml(args.command) + '</div>';
+                        if (args.description) specialContent += '<div style="font-size:0.82em;color:var(--text-muted);margin-top:4px;">' + escapeHtml(args.description) + '</div>';
+                    } else if (tn === 'edit') {
+                        if (args.path || args.file_path) specialContent = '<div class="file-path-display">' + escapeHtml(args.path || args.file_path) + '</div>';
+                        if (args.old_str != null && args.new_str != null) {
+                            try { specialContent += renderSideBySideDiff(args.old_str, args.new_str); } catch(e) {}
+                        }
+                    } else if (tn === 'create') {
+                        if (args.path) specialContent = '<div class="file-path-display">' + escapeHtml(args.path) + '</div>';
+                        if (args.file_text) {
+                            var lines = args.file_text.split('\n');
+                            var preview = lines.slice(0, 10);
+                            specialContent += '<div class="write-preview">' + escapeHtml(preview.join('\n'));
+                            if (lines.length > 10) specialContent += '<div class="truncation-notice">... ' + (lines.length - 10) + ' more lines</div>';
+                            specialContent += '</div>';
+                        }
+                    } else if (tn === 'view' || tn === 'read') {
+                        specialContent = '<div class="file-path-display">' + escapeHtml(args.path || args.file_path || '') + '</div>';
+                    } else if (tn === 'grep') {
+                        specialContent = '<div style="font-family:var(--font-mono);font-size:0.85em;">';
+                        if (args.pattern) specialContent += '<span style="color:var(--text-primary);">pattern:</span> ' + escapeHtml(args.pattern) + '<br>';
+                        if (args.path) specialContent += '<span style="color:var(--text-primary);">path:</span> ' + escapeHtml(args.path);
+                        specialContent += '</div>';
+                    } else if (tn === 'glob') {
+                        specialContent = '<div style="font-family:var(--font-mono);font-size:0.85em;">' + escapeHtml(args.pattern || '');
+                        if (args.path) specialContent += ' in ' + escapeHtml(args.path);
+                        specialContent += '</div>';
+                    } else {
+                        var argsStr = JSON.stringify(args, null, 2);
+                        if (argsStr.length > 500) argsStr = argsStr.substring(0, 500) + '...';
+                        specialContent = '<div class="tool-use-block">' + escapeHtml(argsStr) + '</div>';
+                    }
+
+                    contentHtml = '<div class="entry-content" id="content-' + idx + '"><div class="tool-block">' + badge + specialContent + '</div></div>';
+                } else if (type === 'tool.execution_complete') {
+                    var td2 = entry.data;
+                    var cid = nextCollapseId();
+                    var isError = td2.success === false;
+                    var statusIcon = isError ? 'ERR' : 'OK';
+                    var statusStyle = isError ? 'color:var(--color-danger)' : 'color:var(--color-success)';
+                    var toolBadge2 = '<span class="tool-name-badge">' + escapeHtml(td2.toolName || 'unknown') + '</span>';
+
+                    var resultText = '';
+                    if (td2.result) {
+                        if (td2.result.content) resultText += td2.result.content;
+                        if (td2.result.detailedContent) resultText += (resultText ? '\n' : '') + td2.result.detailedContent;
+                    }
+                    if (!resultText) resultText = '(empty result)';
+                    if (resultText.length > 3000) resultText = resultText.substring(0, 3000) + '\n... [truncated]';
+
+                    contentHtml = '<div class="entry-content" id="content-' + idx + '"><div class="tool-block">' + toolBadge2 +
+                        '<div class="collapse-toggle" onclick="toggleCollapse(\'' + cid + '\')" style="margin-top:4px;">' +
+                            '<span class="toggle-indicator" id="toggle-' + cid + '">[+]</span>' +
+                            '<span style="font-size:0.82em;color:var(--text-muted);">Result <span style="' + statusStyle + ';font-weight:600;">' + statusIcon + '</span></span>' +
+                        '</div>' +
+                        '<div id="collapse-' + cid + '" class="collapse-content collapsed">' +
+                            '<div class="tool-result-block" style="max-height:none;">' + escapeHtml(resultText) + '</div>' +
+                        '</div></div></div>';
+                }
+            }
+
             // If entry contains tool_use, tool_result, or thinking blocks, use enhanced rendering
-            if (hasSpecialBlocks(entry)) {
+            if (!contentHtml && hasSpecialBlocks(entry)) {
                 contentHtml = '<div class="entry-content" id="content-' + idx + '">' + buildToolBlocksHtml(entry, idx) + '</div>';
-            } else {
+            }
+            if (!contentHtml) {
                 var content = extractContent(entry);
                 var truncated = content && content.length > 500;
                 var displayContent = truncated ? content.substring(0, 500) : content;
@@ -979,6 +1091,123 @@
                     }
                 }
             }
+            // Handle Copilot-specific event types
+            if (entry.provider === 'copilot' && entry.data && typeof entry.data === 'object') {
+                var d = entry.data;
+                if (entry.type === 'user.message') return d.content || d.transformedContent || '';
+                if (entry.type === 'assistant.message') {
+                    var cparts = [];
+                    if (d.content) cparts.push(d.content);
+                    if (d.toolRequests && Array.isArray(d.toolRequests)) {
+                        d.toolRequests.forEach(function(tr) {
+                            cparts.push('[Tool Call] ' + (tr.name || 'unknown') + ': ' + JSON.stringify(tr.arguments || {}, null, 2));
+                        });
+                    }
+                    if (d.reasoningText) cparts.push('[Thinking]\n' + d.reasoningText);
+                    return cparts.join('\n\n') || JSON.stringify(d, null, 2);
+                }
+                if (entry.type === 'tool.execution_start') {
+                    var tParts = ['Tool: ' + (d.toolName || 'unknown')];
+                    if (d.arguments) {
+                        var args = typeof d.arguments === 'string' ? d.arguments : JSON.stringify(d.arguments, null, 2);
+                        // Show compact version for known tools
+                        var tn = (d.toolName || '').toLowerCase();
+                        if (typeof d.arguments === 'object' && d.arguments !== null) {
+                            if (tn === 'powershell' || tn === 'bash' || tn === 'execute') {
+                                if (d.arguments.command) tParts.push('Command: ' + d.arguments.command);
+                                if (d.arguments.description) tParts.push('Description: ' + d.arguments.description);
+                            } else if (tn === 'view' || tn === 'read') {
+                                if (d.arguments.path || d.arguments.file_path) tParts.push('Path: ' + (d.arguments.path || d.arguments.file_path));
+                                if (d.arguments.view_range) tParts.push('Range: ' + JSON.stringify(d.arguments.view_range));
+                            } else if (tn === 'edit') {
+                                if (d.arguments.path || d.arguments.file_path) tParts.push('Path: ' + (d.arguments.path || d.arguments.file_path));
+                                if (d.arguments.old_str != null) { var os = d.arguments.old_str; tParts.push('old_str: ' + (os.length > 200 ? os.substring(0,200) + '...' : os)); }
+                                if (d.arguments.new_str != null) { var ns = d.arguments.new_str; tParts.push('new_str: ' + (ns.length > 200 ? ns.substring(0,200) + '...' : ns)); }
+                            } else if (tn === 'create') {
+                                if (d.arguments.path) tParts.push('Path: ' + d.arguments.path);
+                                if (d.arguments.file_text) { var ft = d.arguments.file_text; tParts.push('Content: ' + (ft.length > 200 ? ft.substring(0,200) + '...' : ft)); }
+                            } else if (tn === 'grep') {
+                                if (d.arguments.pattern) tParts.push('Pattern: ' + d.arguments.pattern);
+                                if (d.arguments.path) tParts.push('Path: ' + d.arguments.path);
+                            } else if (tn === 'glob') {
+                                if (d.arguments.pattern) tParts.push('Pattern: ' + d.arguments.pattern);
+                            } else if (tn === 'web_search') {
+                                if (d.arguments.query) tParts.push('Query: ' + d.arguments.query);
+                            } else if (tn === 'task') {
+                                if (d.arguments.description) tParts.push('Description: ' + d.arguments.description);
+                                if (d.arguments.agent_type) tParts.push('Agent: ' + d.arguments.agent_type);
+                            } else {
+                                tParts.push(args.length > 500 ? args.substring(0, 500) + '...' : args);
+                            }
+                        } else {
+                            tParts.push(args.length > 500 ? args.substring(0, 500) + '...' : args);
+                        }
+                    }
+                    return tParts.join('\n');
+                }
+                if (entry.type === 'tool.execution_complete') {
+                    var rparts = ['Tool: ' + (d.toolName || d.toolCallId || 'unknown')];
+                    if (d.success !== undefined) rparts.push('Success: ' + d.success);
+                    if (d.result) {
+                        if (d.result.content) {
+                            var rc = d.result.content;
+                            rparts.push(rc.length > 2000 ? rc.substring(0, 2000) + '\n... [truncated]' : rc);
+                        }
+                        if (d.result.detailedContent) {
+                            var dc = d.result.detailedContent;
+                            rparts.push(dc.length > 2000 ? dc.substring(0, 2000) + '\n... [truncated]' : dc);
+                        }
+                    }
+                    return rparts.join('\n');
+                }
+                if (entry.type === 'session.start') {
+                    var sParts = ['Session started'];
+                    if (d.producer) sParts.push('Producer: ' + d.producer);
+                    if (d.copilotVersion) sParts.push('Version: ' + d.copilotVersion);
+                    if (d.startTime) sParts.push('Time: ' + new Date(d.startTime).toLocaleString());
+                    if (d.context) {
+                        if (d.context.cwd) sParts.push('CWD: ' + d.context.cwd);
+                        if (d.context.branch) sParts.push('Branch: ' + d.context.branch);
+                        if (d.context.repository) sParts.push('Repository: ' + d.context.repository);
+                    }
+                    return sParts.join('\n');
+                }
+                if (entry.type === 'session.task_complete') {
+                    var tcParts = ['Task completed'];
+                    if (d.summary) tcParts.push(d.summary);
+                    return tcParts.join('\n');
+                }
+                if (entry.type === 'subagent.started') {
+                    var saParts = ['Sub-agent started'];
+                    if (d.agentType) saParts.push('Type: ' + d.agentType);
+                    if (d.description) saParts.push('Task: ' + d.description);
+                    return saParts.join('\n');
+                }
+                if (entry.type === 'subagent.completed') {
+                    var scParts = ['Sub-agent completed'];
+                    if (d.agentType) scParts.push('Type: ' + d.agentType);
+                    if (d.success !== undefined) scParts.push('Success: ' + d.success);
+                    if (d.result) scParts.push(typeof d.result === 'string' ? d.result : JSON.stringify(d.result, null, 2));
+                    return scParts.join('\n');
+                }
+                if (entry.type === 'session.mode_changed') {
+                    return 'Mode changed' + (d.mode ? ' to: ' + d.mode : '') + (d.reason ? '\nReason: ' + d.reason : '');
+                }
+                if (entry.type === 'session.compaction_start') return 'Compaction started';
+                if (entry.type === 'session.compaction_complete') return 'Compaction complete';
+                if (entry.type === 'session.plan_changed') {
+                    return 'Plan updated' + (d.plan ? '\n' + d.plan : '');
+                }
+                if (entry.type === 'session.resume') return 'Session resumed';
+                if (entry.type === 'abort') return 'Operation aborted' + (d.reason ? ': ' + d.reason : '');
+                if (entry.type === 'assistant.turn_start') return 'Turn started';
+                if (entry.type === 'assistant.turn_end') return 'Turn ended';
+                if (entry.type === 'session.info' || entry.type === 'session.warning') {
+                    return d.message || JSON.stringify(d, null, 2);
+                }
+                // Fallback for unknown Copilot event types
+                return JSON.stringify(d, null, 2);
+            }
             if (entry.data && typeof entry.data === 'object') {
                 if (entry.data.type) return '[' + entry.data.type + '] ' + (entry.data.command || entry.data.hookName || '');
                 return JSON.stringify(entry.data, null, 2);
@@ -1051,7 +1280,7 @@
 
             return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Transcript: ' + escapeHtml(sessionId) + '</title>' +
                 '<style>body{font-family:-apple-system,system-ui,sans-serif;max-width:900px;margin:0 auto;padding:20px;color:#1a1a2e;}</style></head><body>' +
-                '<h1>Claude Session Transcript</h1><p>Session: <code>' + escapeHtml(sessionId) + '</code></p>' +
+                '<h1>Session Transcript</h1><p>Session: <code>' + escapeHtml(sessionId) + '</code></p>' +
                 '<p>Exported: ' + new Date().toLocaleString() + ' | Entries: ' + entries.length + '</p><hr>' +
                 rows + '</body></html>';
         }

@@ -6,6 +6,7 @@ namespace Leash.Api.Controllers;
 
 [ApiController]
 [Route("api/claude-logs")]
+[Route("api/transcripts")]
 public class ClaudeLogsController : ControllerBase
 {
     private readonly TranscriptWatcher _transcriptWatcher;

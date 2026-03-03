@@ -28,6 +28,7 @@ public class LogsController : ControllerBase
         [FromQuery] string? sessionId = null,
         [FromQuery] string? toolName = null,
         [FromQuery] string? hookType = null,
+        [FromQuery] string? provider = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -53,12 +54,14 @@ public class LogsController : ControllerBase
                     e.Threshold,
                     e.ElapsedMs,
                     e.ResponseJson,
+                    e.Provider,
                     SessionId = s.SessionId
                 }))
                 .Where(e => { var f = ParseFilterValues(decision); return f == null || (e.Decision != null && f.Contains(e.Decision)); })
                 .Where(e => { var f = ParseFilterValues(category); return f == null || (e.Category != null && f.Contains(e.Category)); })
                 .Where(e => { var f = ParseFilterValues(toolName); return f == null || (e.ToolName != null && f.Any(v => e.ToolName.Contains(v, StringComparison.OrdinalIgnoreCase))); })
                 .Where(e => { var f = ParseFilterValues(hookType); return f == null || (e.Type != null && f.Contains(e.Type)); })
+                .Where(e => { var f = ParseFilterValues(provider); return f == null || f.Contains(e.Provider ?? "claude"); })
                 .OrderByDescending(e => e.Timestamp)
                 .Take(limit)
                 .ToList();
@@ -110,6 +113,7 @@ public class LogsController : ControllerBase
                     e.Threshold,
                     e.ElapsedMs,
                     e.ResponseJson,
+                    e.Provider,
                     SessionId = s.SessionId
                 }))
                 .OrderByDescending(e => e.Timestamp)
@@ -150,19 +154,20 @@ public class LogsController : ControllerBase
                     e.Threshold,
                     e.ElapsedMs,
                     e.ResponseJson,
+                    e.Provider,
                     SessionId = s.SessionId
                 }))
                 .OrderByDescending(e => e.Timestamp)
                 .ToList();
 
             var sb = new StringBuilder();
-            sb.AppendLine("Timestamp,SessionId,Type,ToolName,Decision,SafetyScore,Category,Reasoning");
+            sb.AppendLine("Timestamp,SessionId,Type,ToolName,Decision,SafetyScore,Category,Provider,Reasoning");
 
             foreach (var evt in events)
             {
                 var reasoning = EscapeCsvField(evt.Reasoning ?? "");
                 var toolName = EscapeCsvField(evt.ToolName ?? "");
-                sb.AppendLine($"{evt.Timestamp:O},{evt.SessionId},{evt.Type},{toolName},{evt.Decision},{evt.SafetyScore},{evt.Category},{reasoning}");
+                sb.AppendLine($"{evt.Timestamp:O},{evt.SessionId},{evt.Type},{toolName},{evt.Decision},{evt.SafetyScore},{evt.Category},{evt.Provider},{reasoning}");
             }
 
             var bytes = Encoding.UTF8.GetBytes(sb.ToString());

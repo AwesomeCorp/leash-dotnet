@@ -1,6 +1,7 @@
 using Leash.Api.Handlers;
 using Leash.Api.Models;
 using Leash.Api.Services;
+using Leash.Api.Services.Harness;
 using Leash.Api.Services.Tray;
 using Leash.Api.Security;
 using Microsoft.AspNetCore.Mvc;
@@ -16,6 +17,7 @@ namespace Leash.Api.Controllers;
 [Route("api/hooks")]
 public class ClaudeHookController : ControllerBase
 {
+    private readonly IHarnessClient _client;
     private readonly Leash.Api.Services.ConfigurationManager _configManager;
     private readonly SessionManager _sessionManager;
     private readonly HookHandlerFactory _handlerFactory;
@@ -30,6 +32,7 @@ public class ClaudeHookController : ControllerBase
     private readonly ILogger<ClaudeHookController> _logger;
 
     public ClaudeHookController(
+        HarnessClientRegistry clientRegistry,
         Leash.Api.Services.ConfigurationManager configManager,
         SessionManager sessionManager,
         HookHandlerFactory handlerFactory,
@@ -43,6 +46,7 @@ public class ClaudeHookController : ControllerBase
         PendingDecisionService pendingDecisionService,
         ILogger<ClaudeHookController> logger)
     {
+        _client = clientRegistry.GetRequired("claude");
         _configManager = configManager;
         _sessionManager = sessionManager;
         _handlerFactory = handlerFactory;
@@ -56,13 +60,6 @@ public class ClaudeHookController : ControllerBase
         _pendingDecisionService = pendingDecisionService;
         _logger = logger;
     }
-
-    // Tools that should never be approved/denied — they are non-actionable UI interactions.
-    // Return {} (no opinion) so Claude handles them normally without hook interference.
-    private static readonly HashSet<string> PassthroughTools = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "AskUserQuestion"
-    };
 
     /// <summary>
     /// Main Claude hook endpoint. Called as:
@@ -81,7 +78,7 @@ public class ClaudeHookController : ControllerBase
             return BadRequest(new { error = "event query parameter is required" });
 
         // Map raw Claude input to our HookInput
-        var input = MapClaudeInput(rawInput, @event);
+        var input = _client.MapInput(rawInput, @event);
 
         if (string.IsNullOrWhiteSpace(input.SessionId))
         {
@@ -113,7 +110,7 @@ public class ClaudeHookController : ControllerBase
             }
 
             // Find matching handler
-            var handler = _configManager.FindMatchingHandler(input.HookEventName, input.ToolName);
+            var handler = _configManager.FindMatchingHandler(input.HookEventName, input.ToolName, provider: _client.Name);
 
             if (handler == null || handler.Mode == "log-only")
             {
@@ -121,9 +118,8 @@ public class ClaudeHookController : ControllerBase
                 return Content("{}", "application/json");
             }
 
-            // Non-actionable tools (e.g. AskUserQuestion) should never be approved/denied.
-            // Log the event but return no opinion so Claude handles them normally.
-            if (!string.IsNullOrEmpty(input.ToolName) && PassthroughTools.Contains(input.ToolName))
+            // Non-actionable tools should never be approved/denied.
+            if (!string.IsNullOrEmpty(input.ToolName) && _client.IsPassthroughTool(input.ToolName))
             {
                 _logger.LogDebug("Passthrough tool {Tool} — skipping analysis", input.ToolName);
                 await TryLogEventAsync(input, null, handler, cancellationToken);
@@ -172,7 +168,7 @@ public class ClaudeHookController : ControllerBase
                     // Auto-approve safe requests, fall through on anything uncertain/denied
                     if (output.AutoApprove)
                     {
-                        var approveResponse = FormatClaudeResponse(@event, output);
+                        var approveResponse = _client.FormatResponse(@event, output);
                         return Content(JsonSerializer.Serialize(approveResponse), "application/json");
                     }
 
@@ -187,12 +183,22 @@ public class ClaudeHookController : ControllerBase
 
                 case "enforce":
                 default:
-                    // Full enforcement: return approve or deny
-                    // Fire passive notification for denied events
-                    if (!output.AutoApprove)
-                        ShowPassiveNotification(trayConfig, output, input);
-                    var enforceResponse = FormatClaudeResponse(@event, output);
-                    return Content(JsonSerializer.Serialize(enforceResponse), "application/json");
+                    // Full enforcement: allow safe, deny dangerous, ask user for uncertain
+                    if (output.AutoApprove)
+                    {
+                        var enforceResponse = _client.FormatResponse(@event, output);
+                        return Content(JsonSerializer.Serialize(enforceResponse), "application/json");
+                    }
+
+                    // Try interactive tray decision for uncertain scores before denying
+                    var enforceTrayResult = await RequestTrayDecisionAsync(trayConfig, output, input, @event);
+                    if (enforceTrayResult != null)
+                        return Content(JsonSerializer.Serialize(enforceTrayResult), "application/json");
+
+                    // No tray override — deny
+                    ShowPassiveNotification(trayConfig, output, input);
+                    var denyResponse = _client.FormatResponse(@event, output);
+                    return Content(JsonSerializer.Serialize(denyResponse), "application/json");
             }
         }
         catch (OperationCanceledException)
@@ -205,124 +211,6 @@ public class ClaudeHookController : ControllerBase
             // On error, return empty JSON so Claude falls through to normal behavior
             return Content("{}", "application/json");
         }
-    }
-
-    private static HookInput MapClaudeInput(JsonElement raw, string hookEvent)
-    {
-        var input = new HookInput
-        {
-            HookEventName = hookEvent,
-            Timestamp = DateTime.UtcNow
-        };
-
-        if (raw.TryGetProperty("sessionId", out var sid))
-            input.SessionId = sid.GetString() ?? string.Empty;
-        else if (raw.TryGetProperty("session_id", out var sid2))
-            input.SessionId = sid2.GetString() ?? string.Empty;
-
-        if (raw.TryGetProperty("toolName", out var tn))
-            input.ToolName = tn.GetString();
-        else if (raw.TryGetProperty("tool_name", out var tn2))
-            input.ToolName = tn2.GetString();
-
-        if (raw.TryGetProperty("toolInput", out var ti))
-            input.ToolInput = ti;
-        else if (raw.TryGetProperty("tool_input", out var ti2))
-            input.ToolInput = ti2;
-
-        if (raw.TryGetProperty("cwd", out var cwd))
-            input.Cwd = cwd.GetString();
-
-        return input;
-    }
-
-    private static object FormatClaudeResponse(string hookEvent, HookOutput output)
-    {
-        return hookEvent switch
-        {
-            "PermissionRequest" => FormatPermissionResponse(output),
-            "PreToolUse" => FormatPreToolResponse(output),
-            "PostToolUse" => FormatPostToolResponse(output),
-            _ => new { } // Empty object for log-only events
-        };
-    }
-
-    private static object FormatPermissionResponse(HookOutput output)
-    {
-        // Claude Code PermissionRequest format:
-        // { hookSpecificOutput: { hookEventName, decision: { behavior, message? } } }
-        var behavior = output.AutoApprove ? "allow" : "deny";
-
-        var decision = new Dictionary<string, object>
-        {
-            ["behavior"] = behavior
-        };
-
-        if (!output.AutoApprove)
-        {
-            var reasoning = output.Reasoning.Length > 1000
-                ? output.Reasoning[..1000]
-                : output.Reasoning;
-            decision["message"] = $"Safety score {output.SafetyScore} below threshold {output.Threshold}. {reasoning}";
-        }
-
-        return new
-        {
-            hookSpecificOutput = new Dictionary<string, object>
-            {
-                ["hookEventName"] = "PermissionRequest",
-                ["decision"] = decision
-            }
-        };
-    }
-
-    private static object FormatPreToolResponse(HookOutput output)
-    {
-        // Claude Code PreToolUse format:
-        // { hookSpecificOutput: { hookEventName, permissionDecision, permissionDecisionReason? } }
-        string permissionDecision;
-        if (output.SafetyScore >= output.Threshold)
-            permissionDecision = "allow";
-        else if (output.SafetyScore < 30)
-            permissionDecision = "deny";
-        else
-            permissionDecision = "ask";
-
-        var hookOutput = new Dictionary<string, object>
-        {
-            ["hookEventName"] = "PreToolUse",
-            ["permissionDecision"] = permissionDecision
-        };
-
-        if (permissionDecision != "allow")
-        {
-            var reasoning = output.Reasoning.Length > 1000
-                ? output.Reasoning[..1000]
-                : output.Reasoning;
-            hookOutput["permissionDecisionReason"] = reasoning;
-        }
-
-        return new { hookSpecificOutput = hookOutput };
-    }
-
-    private static object FormatPostToolResponse(HookOutput output)
-    {
-        // Claude Code PostToolUse format:
-        // { hookSpecificOutput: { hookEventName, additionalContext? }, decision?, reason? }
-        if (!string.IsNullOrEmpty(output.SystemMessage))
-        {
-            return new
-            {
-                hookSpecificOutput = new
-                {
-                    hookEventName = "PostToolUse",
-                    additionalContext = output.SystemMessage.Length > 500
-                        ? output.SystemMessage[..500]
-                        : output.SystemMessage
-                }
-            };
-        }
-        return new { };
     }
 
     /// <summary>
@@ -374,14 +262,14 @@ public class ClaudeHookController : ControllerBase
                 _logger.LogInformation("Tray: user approved {Tool} (score={Score})", input.ToolName, output.SafetyScore);
                 output.AutoApprove = true;
                 await TryLogTrayDecisionAsync(input, output, "tray-approved", CancellationToken.None);
-                return FormatClaudeResponse(hookEvent, output);
+                return _client.FormatResponse(hookEvent, output);
             }
             else if (decision == TrayDecision.Deny)
             {
                 _logger.LogInformation("Tray: user denied {Tool} (score={Score})", input.ToolName, output.SafetyScore);
                 output.AutoApprove = false;
                 await TryLogTrayDecisionAsync(input, output, "tray-denied", CancellationToken.None);
-                return FormatClaudeResponse(hookEvent, output);
+                return _client.FormatResponse(hookEvent, output);
             }
 
             // null = timeout, fall through
@@ -438,11 +326,25 @@ public class ClaudeHookController : ControllerBase
 
     private static NotificationInfo BuildNotificationInfo(HookOutput output, HookInput input, NotificationLevel level)
     {
+        var providerLabel = input.Provider == "copilot" ? "Copilot" : "Claude";
         var title = level == NotificationLevel.Danger
-            ? $"DENIED: {input.ToolName ?? "unknown"}"
-            : $"Review: {input.ToolName ?? "unknown"} (score {output.SafetyScore})";
+            ? $"[{providerLabel}] DENIED: {input.ToolName ?? "unknown"}"
+            : $"[{providerLabel}] Review: {input.ToolName ?? "unknown"} (score {output.SafetyScore})";
 
         var body = $"Score: {output.SafetyScore} | {output.Category ?? "unknown"}\n{Truncate(output.Reasoning, 200)}";
+
+        // Extract command preview from tool input
+        string? commandPreview = null;
+        if (input.ToolInput.HasValue)
+        {
+            var ti = input.ToolInput.Value;
+            if (ti.TryGetProperty("command", out var cmd))
+                commandPreview = cmd.GetString();
+            else if (ti.TryGetProperty("description", out var desc))
+                commandPreview = desc.GetString();
+            else if (ti.TryGetProperty("file_path", out var fp))
+                commandPreview = fp.GetString();
+        }
 
         return new NotificationInfo
         {
@@ -452,6 +354,8 @@ public class ClaudeHookController : ControllerBase
             SafetyScore = output.SafetyScore,
             Reasoning = output.Reasoning,
             Category = output.Category,
+            Provider = input.Provider,
+            CommandPreview = commandPreview,
             Level = level
         };
     }
@@ -495,12 +399,12 @@ public class ClaudeHookController : ControllerBase
                 _ => "denied"
             };
 
-            // Build the response JSON that would be (or was) returned to Claude
+            // Build the response JSON that would be (or was) returned to the client
             string? responseJson = null;
             if (output != null)
             {
-                var claudeResponse = FormatClaudeResponse(input.HookEventName, output);
-                responseJson = JsonSerializer.Serialize(claudeResponse, new JsonSerializerOptions { WriteIndented = true });
+                var clientResponse = _client.FormatResponse(input.HookEventName, output);
+                responseJson = JsonSerializer.Serialize(clientResponse, new JsonSerializerOptions { WriteIndented = true });
             }
 
             var evt = new SessionEvent

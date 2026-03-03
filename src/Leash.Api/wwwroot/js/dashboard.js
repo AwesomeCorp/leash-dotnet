@@ -135,7 +135,7 @@ async function loadActivity() {
                 <div class="empty-state">
                     <div class="empty-state-icon">\u{1F50D}</div>
                     <h3>No activity yet</h3>
-                    <p>Permission analysis events will appear here as Claude Code makes tool calls through the hook system.</p>
+                    <p>Permission analysis events will appear here as Claude Code or Copilot CLI makes tool calls through the hook system.</p>
                 </div>
             `;
             return;

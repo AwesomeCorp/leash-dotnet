@@ -143,18 +143,27 @@ public class ConfigurationManager
 
     public HandlerConfig? FindMatchingHandler(string hookEventName, string? toolName, string provider = "claude")
     {
-        // For copilot provider, check copilot-specific handlers first
+        // 1. Check for handlers with explicit Client matching this provider
+        var allHandlers = GetHandlersForHook(hookEventName);
+        var clientMatch = allHandlers
+            .Where(h => string.Equals(h.Client, provider, StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault(h => h.Matches(toolName ?? string.Empty));
+        if (clientMatch != null)
+            return clientMatch;
+
+        // 2. Check deprecated Copilot.HookHandlers section (backwards compat)
         if (string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase))
         {
             var copilotHandlers = GetHandlersForHook(hookEventName, provider: "copilot");
-            var match = copilotHandlers.FirstOrDefault(h => h.Matches(toolName ?? string.Empty));
-            if (match != null)
-                return match;
+            var legacyMatch = copilotHandlers.FirstOrDefault(h => h.Matches(toolName ?? string.Empty));
+            if (legacyMatch != null)
+                return legacyMatch;
         }
 
-        // Fall back to shared handlers
-        var handlers = GetHandlersForHook(hookEventName);
-        return handlers.FirstOrDefault(h => h.Matches(toolName ?? string.Empty));
+        // 3. Fall back to handlers with Client = null (applies to all clients)
+        return allHandlers
+            .Where(h => h.Client == null)
+            .FirstOrDefault(h => h.Matches(toolName ?? string.Empty));
     }
 
     public List<HandlerConfig> GetHandlersForHook(string hookEventName, string provider)
@@ -260,8 +269,11 @@ public class ConfigurationManager
                         new() { Name = "pre-tool-analyzer", Matcher = "Bash|Write|Edit", Mode = "llm-analysis",
                             PromptTemplate = Path.Combine(promptsDir, "pre-tool-use-prompt.txt"),
                             Threshold = 80, AutoApprove = true },
-                        new() { Name = "pre-tool-logger", Matcher = "*", Mode = "log-only",
-                            Config = new Dictionary<string, object> { ["logLevel"] = "info" } }
+                        new() { Name = "pre-tool-logger", Matcher = "*", Mode = "log-only", Client = "claude",
+                            Config = new Dictionary<string, object> { ["logLevel"] = "info" } },
+                        new() { Name = "copilot-pre-tool", Matcher = "*", Mode = "llm-analysis", Client = "copilot",
+                            PromptTemplate = Path.Combine(promptsDir, "pre-tool-use-prompt.txt"),
+                            Threshold = 85, AutoApprove = true }
                     }
                 },
                 ["PostToolUse"] = new HookEventConfig
@@ -307,7 +319,7 @@ public class ConfigurationManager
             },
             Copilot = new CopilotConfig
             {
-                Enabled = false,
+                Enabled = true,
                 HookHandlers = new Dictionary<string, HookEventConfig>
                 {
                     ["PreToolUse"] = new HookEventConfig

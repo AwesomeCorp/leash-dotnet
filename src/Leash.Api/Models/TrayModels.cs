@@ -22,6 +22,8 @@ public record NotificationInfo
     public string? Reasoning { get; init; }
     public string? Category { get; init; }
     public string? DecisionId { get; init; }
+    public string? Provider { get; init; }
+    public string? CommandPreview { get; init; }
     public NotificationLevel Level { get; init; } = NotificationLevel.Info;
 }
 
@@ -49,7 +51,7 @@ public class TrayConfig
     public bool InteractiveEnabled { get; set; } = true;
 
     /// <summary>Timeout in seconds for interactive dialogs before falling through. Must be less than 30 (Kestrel timeout).</summary>
-    public int InteractiveTimeoutSeconds { get; set; } = 25;
+    public int InteractiveTimeoutSeconds { get; set; } = 10;
 
     /// <summary>Minimum safety score to show interactive dialog (below this, auto-deny in enforce mode).</summary>
     public int InteractiveScoreMin { get; set; } = 30;

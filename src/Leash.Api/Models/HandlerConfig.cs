@@ -43,6 +43,7 @@ public class HandlerConfig
 
     public string Mode { get; set; } = "log-only";
     public string? PromptTemplate { get; set; }
+    public string? Client { get; set; }
     public int Threshold { get; set; } = 85;
     public int ThresholdStrict { get; set; } = 95;
     public int ThresholdModerate { get; set; } = 85;

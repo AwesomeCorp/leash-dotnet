@@ -2,6 +2,7 @@ using Leash.Api.Controllers;
 using Leash.Api.Handlers;
 using Leash.Api.Models;
 using Leash.Api.Services;
+using Leash.Api.Services.Harness;
 using Leash.Api.Services.Tray;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,7 @@ public class ClaudeHookControllerTests : IDisposable
     private readonly Leash.Api.Services.ConfigurationManager _configManager;
     private readonly EnforcementService _enforcementService;
     private readonly AdaptiveThresholdService _adaptiveService;
+    private readonly HarnessClientRegistry _clientRegistry;
     private readonly ClaudeHookController _controller;
 
     public ClaudeHookControllerTests()
@@ -36,6 +38,12 @@ public class ClaudeHookControllerTests : IDisposable
         var sessionsDir = Path.Combine(_tempDir, "sessions");
         _sessionManager = new SessionManager(sessionsDir);
         _adaptiveService = new AdaptiveThresholdService(_tempDir);
+
+        _clientRegistry = new HarnessClientRegistry(new IHarnessClient[]
+        {
+            new ClaudeHarnessClient(),
+            new CopilotHarnessClient()
+        });
 
         // Default configuration: enforcement OFF
         var configuration = new Configuration { EnforcementEnabled = false };
@@ -78,6 +86,7 @@ public class ClaudeHookControllerTests : IDisposable
             _configManager, mockHttpClientFactory.Object, NullLogger<TriggerService>.Instance);
 
         _controller = new ClaudeHookController(
+            _clientRegistry,
             _configManager,
             _sessionManager,
             _mockHandlerFactory.Object,
@@ -121,6 +130,7 @@ public class ClaudeHookControllerTests : IDisposable
             configMgr, mockHttpClientFactory.Object, NullLogger<TriggerService>.Instance);
 
         return new ClaudeHookController(
+            _clientRegistry,
             configMgr,
             _sessionManager,
             _mockHandlerFactory.Object,

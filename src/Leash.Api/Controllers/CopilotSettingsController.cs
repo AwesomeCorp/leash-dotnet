@@ -11,12 +11,12 @@ public class CopilotSettingsController : ControllerBase
     private readonly ILogger<CopilotSettingsController> _logger;
 
     /// <summary>
-    /// Returns the path to the Copilot hooks.json for the current working directory.
-    /// Copilot CLI reads hooks from .github/hooks/ in the project root.
+    /// Returns the path to the user-level Copilot hooks.json.
+    /// This is the global hooks config at ~/.copilot/hooks/hooks.json.
     /// </summary>
     private static string GetSettingsPath() => Path.Combine(
-        Directory.GetCurrentDirectory(),
-        ".github",
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".copilot",
         "hooks",
         "hooks.json");
 

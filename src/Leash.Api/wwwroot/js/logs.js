@@ -7,6 +7,7 @@ var lastLogCount = 0;
 
 /* ---------- Chip Filter Definitions & State ---------- */
 var chipDefinitions = {
+    harness: ['claude', 'copilot'],
     hookType: ['PermissionRequest', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'TrayDecision'],
     toolName: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task'],
     category: ['safe', 'cautious', 'risky', 'dangerous'],
@@ -107,6 +108,7 @@ async function loadLogs(forceFullRender) {
     const category = getChipFilterParam('category');
     const hookType = getChipFilterParam('hookType');
     const toolName = getChipFilterParam('toolName');
+    const harness = getChipFilterParam('harness');
     const sessionId = document.getElementById('filterSession')?.value || '';
     const limit = document.getElementById('filterLimit')?.value || '100';
 
@@ -115,6 +117,7 @@ async function loadLogs(forceFullRender) {
     if (category) params.set('category', category);
     if (hookType) params.set('hookType', hookType);
     if (toolName) params.set('toolName', toolName);
+    if (harness) params.set('provider', harness);
     if (sessionId) params.set('sessionId', sessionId);
     params.set('limit', limit);
 
@@ -205,6 +208,7 @@ function buildLogEntryHtml(log, i) {
         <div class="log-entry-detailed" role="row">
             <div class="log-header" onclick="toggleLogDetail(${i})">
                 <span class="log-time" title="${formatTimestamp(log.timestamp)}">${new Date(log.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>
+                <span class="log-provider-badge ${log.provider === 'copilot' ? 'provider-copilot' : 'provider-claude'}" title="${log.provider === 'copilot' ? 'Copilot' : 'Claude'}">${log.provider === 'copilot' ? 'CP' : 'CL'}</span>
                 <span class="log-type-badge">${escapeHtml(log.type || 'unknown')}</span>
                 <span class="log-tool" title="${escapeHtml(log.toolName || '')}">${escapeHtml(log.toolName || 'N/A')}</span>
                 <span class="log-request-preview" title="${escapeHtml(requestPreview)}">${escapeHtml(requestPreview)}</span>
@@ -226,7 +230,7 @@ function buildLogEntryHtml(log, i) {
                 </div>` : ''}
                 ${log.responseJson ? `
                 <div class="detail-section">
-                    <div class="detail-label">Response JSON (returned to Claude)</div>
+                    <div class="detail-label">Response JSON (returned to ${log.provider === 'copilot' ? 'Copilot' : 'Claude'})</div>
                     <pre class="detail-content" style="font-size:0.85em;">${escapeHtml(log.responseJson)}</pre>
                 </div>` : ''}
                 <div class="detail-section detail-row">

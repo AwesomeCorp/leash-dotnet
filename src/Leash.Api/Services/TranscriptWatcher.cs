@@ -1,3 +1,4 @@
+using Leash.Api.Services.Harness;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -6,36 +7,44 @@ namespace Leash.Api.Services;
 
 public class TranscriptWatcher : IDisposable
 {
-    private readonly string _claudeProjectsDir;
+    private readonly HarnessClientRegistry _clientRegistry;
     private readonly ILogger<TranscriptWatcher> _logger;
     private readonly ConcurrentDictionary<string, FileSystemWatcher> _watchers = new();
     private readonly ConcurrentDictionary<string, long> _filePositions = new();
+    private readonly ConcurrentDictionary<string, IHarnessClient> _dirToClient = new();
     private int _disposed;
 
     public event EventHandler<TranscriptEventArgs>? TranscriptUpdated;
 
-    public TranscriptWatcher(ILogger<TranscriptWatcher> logger)
+    public TranscriptWatcher(HarnessClientRegistry clientRegistry, ILogger<TranscriptWatcher> logger)
     {
+        _clientRegistry = clientRegistry;
         _logger = logger;
-        _claudeProjectsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".claude", "projects");
     }
 
     public void Start()
     {
-        if (!Directory.Exists(_claudeProjectsDir))
+        foreach (var client in _clientRegistry.GetAll())
         {
-            _logger.LogDebug("Claude projects directory not found at {Dir}, transcript watching disabled", _claudeProjectsDir);
-            return;
+            var dir = client.GetTranscriptDirectory();
+            if (dir == null) continue;
+
+            _dirToClient[dir] = client;
+            _logger.LogDebug("Starting transcript watcher for {Client} at {Dir}", client.DisplayName, dir);
+
+            if (client.Name == "claude")
+                StartClaudeWatcher(dir);
+            else if (client.Name == "copilot")
+                StartCopilotWatcher(dir);
         }
+    }
 
-        _logger.LogDebug("Starting transcript watcher for {Dir}", _claudeProjectsDir);
+    private void StartClaudeWatcher(string projectsDir)
+    {
 
-        // Watch the top-level projects directory for new project folders
         try
         {
-            var topWatcher = new FileSystemWatcher(_claudeProjectsDir)
+            var topWatcher = new FileSystemWatcher(projectsDir)
             {
                 NotifyFilter = NotifyFilters.DirectoryName,
                 IncludeSubdirectories = false,
@@ -50,40 +59,135 @@ public class TranscriptWatcher : IDisposable
         }
 
         // Set up watchers for existing project directories
-        foreach (var projectDir in GetProjectDirectories())
+        try
         {
-            WatchProjectDirectory(projectDir);
+            foreach (var projectDir in Directory.GetDirectories(projectsDir))
+                WatchProjectDirectory(projectDir);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to enumerate project directories");
+        }
+    }
+
+    private void StartCopilotWatcher(string sessionDir)
+    {
+
+        // Watch for new session folders
+        try
+        {
+            var topWatcher = new FileSystemWatcher(sessionDir)
+            {
+                NotifyFilter = NotifyFilters.DirectoryName,
+                IncludeSubdirectories = false,
+                EnableRaisingEvents = true
+            };
+            topWatcher.Created += OnCopilotSessionCreated;
+            _watchers["__copilot_top__"] = topWatcher;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to watch Copilot session-state directory");
+        }
+
+        // Watch existing session folders for events.jsonl changes
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(sessionDir))
+                WatchCopilotSessionDirectory(dir);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to enumerate Copilot session directories");
         }
     }
 
     public List<ClaudeProject> GetProjects()
     {
-        var projects = new List<ClaudeProject>();
+        var allProjects = new List<ClaudeProject>();
+        foreach (var client in _clientRegistry.GetAll())
+            allProjects.AddRange(client.DiscoverProjects());
 
-        if (!Directory.Exists(_claudeProjectsDir))
-            return projects;
-
-        foreach (var projectDir in GetProjectDirectories())
-        {
-            var projectName = Path.GetFileName(projectDir);
-            var sessions = GetSessionsForProject(projectDir);
-            projects.Add(new ClaudeProject
-            {
-                Name = projectName,
-                Path = projectDir,
-                Sessions = sessions
-            });
-        }
-
-        return projects;
+        return MergeProjectsByFolder(allProjects);
     }
 
+    /// <summary>
+    /// Merges projects from different clients that share the same working directory.
+    /// </summary>
+    private static List<ClaudeProject> MergeProjectsByFolder(List<ClaudeProject> projects)
+    {
+        var byFolder = new Dictionary<string, ClaudeProject>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var project in projects)
+        {
+            // Resolve the actual cwd for grouping
+            var cwd = project.Cwd;
+            if (string.IsNullOrEmpty(cwd) && project.Provider == "claude")
+                cwd = DecodeClaudeProjectPath(project.Name);
+
+            if (string.IsNullOrEmpty(cwd))
+                cwd = project.Path;
+
+            var key = cwd.TrimEnd('\\', '/');
+
+            if (byFolder.TryGetValue(key, out var existing))
+            {
+                // Merge sessions into existing project
+                existing.Sessions.AddRange(project.Sessions);
+
+                // Fill in git info from whichever source has it
+                existing.GitRoot ??= project.GitRoot;
+                existing.Branch ??= project.Branch;
+                existing.Repository ??= project.Repository;
+            }
+            else
+            {
+                var folderName = System.IO.Path.GetFileName(key);
+                byFolder[key] = new ClaudeProject
+                {
+                    Name = string.IsNullOrEmpty(folderName) ? key : folderName,
+                    Path = project.Path,
+                    Provider = project.Provider,
+                    Cwd = cwd,
+                    GitRoot = project.GitRoot,
+                    Branch = project.Branch,
+                    Repository = project.Repository,
+                    Sessions = new List<ClaudeSession>(project.Sessions)
+                };
+            }
+        }
+
+        // Sort sessions within each merged project by last modified descending
+        foreach (var project in byFolder.Values)
+            project.Sessions = project.Sessions.OrderByDescending(s => s.LastModified).ToList();
+
+        return byFolder.Values.ToList();
+    }
+
+    /// <summary>
+    /// Decodes a Claude project directory name back to the original filesystem path.
+    /// E.g. "C--Users-shahabm-source-repos-ClaudeObserver" → "C:\Users\shahabm\source\repos\ClaudeObserver"
+    /// </summary>
+    public static string DecodeClaudeProjectPath(string encoded)
+    {
+        if (string.IsNullOrEmpty(encoded))
+            return encoded;
+
+        // Pattern: drive letter followed by -- (e.g. "C--")
+        if (encoded.Length >= 3 && char.IsLetter(encoded[0]) && encoded[1] == '-' && encoded[2] == '-')
+        {
+            return encoded[0] + @":\" + encoded[3..].Replace('-', '\\');
+        }
+
+        // Fallback: just replace dashes with separators
+        return encoded.Replace('-', System.IO.Path.DirectorySeparatorChar);
+    }
     public List<TranscriptEntry> GetTranscript(string sessionId)
     {
         var entries = new List<TranscriptEntry>();
-        var file = FindTranscriptFile(sessionId);
+        var (file, client) = FindTranscriptFileWithClient(sessionId);
 
-        if (file == null || !File.Exists(file))
+        if (file == null || client == null || !File.Exists(file))
             return entries;
 
         try
@@ -95,7 +199,7 @@ public class TranscriptWatcher : IDisposable
 
                 try
                 {
-                    var entry = JsonSerializer.Deserialize<TranscriptEntry>(line);
+                    var entry = client.ParseTranscriptLine(line);
                     if (entry != null)
                         entries.Add(entry);
                 }
@@ -115,64 +219,19 @@ public class TranscriptWatcher : IDisposable
 
     public string? FindTranscriptFile(string sessionId)
     {
-        if (!Directory.Exists(_claudeProjectsDir))
-            return null;
-
-        foreach (var projectDir in GetProjectDirectories())
-        {
-            var jsonlFiles = Directory.GetFiles(projectDir, "*.jsonl", SearchOption.TopDirectoryOnly);
-            foreach (var file in jsonlFiles)
-            {
-                var fileName = Path.GetFileNameWithoutExtension(file);
-                if (fileName.Equals(sessionId, StringComparison.OrdinalIgnoreCase))
-                    return file;
-            }
-        }
-
-        return null;
+        var (file, _) = FindTranscriptFileWithClient(sessionId);
+        return file;
     }
 
-    private IEnumerable<string> GetProjectDirectories()
+    private (string? file, IHarnessClient? client) FindTranscriptFileWithClient(string sessionId)
     {
-        if (!Directory.Exists(_claudeProjectsDir))
-            return Enumerable.Empty<string>();
-
-        try
+        foreach (var client in _clientRegistry.GetAll())
         {
-            return Directory.GetDirectories(_claudeProjectsDir);
+            var file = client.FindTranscriptFile(sessionId);
+            if (file != null)
+                return (file, client);
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to enumerate project directories");
-            return Enumerable.Empty<string>();
-        }
-    }
-
-    private List<ClaudeSession> GetSessionsForProject(string projectDir)
-    {
-        var sessions = new List<ClaudeSession>();
-
-        try
-        {
-            var jsonlFiles = Directory.GetFiles(projectDir, "*.jsonl", SearchOption.TopDirectoryOnly);
-            foreach (var file in jsonlFiles)
-            {
-                var fileInfo = new FileInfo(file);
-                sessions.Add(new ClaudeSession
-                {
-                    SessionId = Path.GetFileNameWithoutExtension(file),
-                    FilePath = file,
-                    LastModified = fileInfo.LastWriteTimeUtc,
-                    SizeBytes = fileInfo.Length
-                });
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to enumerate sessions in {ProjectDir}", projectDir);
-        }
-
-        return sessions.OrderByDescending(s => s.LastModified).ToList();
+        return (null, null);
     }
 
     private void WatchProjectDirectory(string projectDir)
@@ -212,11 +271,16 @@ public class TranscriptWatcher : IDisposable
     {
         try
         {
-            var sessionId = Path.GetFileNameWithoutExtension(e.FullPath);
-            var newEntries = ReadNewEntries(e.FullPath);
+            var client = ResolveClientForPath(e.FullPath);
+            var newEntries = ReadNewEntries(e.FullPath, client);
 
             if (newEntries.Count > 0)
             {
+                // For Claude, sessionId is filename; for Copilot, it's the parent folder
+                var sessionId = client?.Name == "copilot"
+                    ? Path.GetFileName(Path.GetDirectoryName(e.FullPath) ?? "")
+                    : Path.GetFileNameWithoutExtension(e.FullPath);
+
                 TranscriptUpdated?.Invoke(this, new TranscriptEventArgs
                 {
                     SessionId = sessionId,
@@ -230,9 +294,20 @@ public class TranscriptWatcher : IDisposable
         }
     }
 
-    private List<TranscriptEntry> ReadNewEntries(string filePath)
+    private IHarnessClient? ResolveClientForPath(string filePath)
+    {
+        foreach (var (dir, client) in _dirToClient)
+        {
+            if (filePath.StartsWith(dir, StringComparison.OrdinalIgnoreCase))
+                return client;
+        }
+        return _clientRegistry.Get("claude"); // fallback
+    }
+
+    private List<TranscriptEntry> ReadNewEntries(string filePath, IHarnessClient? client)
     {
         var entries = new List<TranscriptEntry>();
+        client ??= _clientRegistry.Get("claude");
 
         var lastPos = _filePositions.GetOrAdd(filePath, 0);
 
@@ -253,7 +328,7 @@ public class TranscriptWatcher : IDisposable
 
                 try
                 {
-                    var entry = JsonSerializer.Deserialize<TranscriptEntry>(line);
+                    var entry = client?.ParseTranscriptLine(line);
                     if (entry != null)
                         entries.Add(entry);
                 }
@@ -271,6 +346,44 @@ public class TranscriptWatcher : IDisposable
         }
 
         return entries;
+    }
+
+    // --- Copilot watcher helpers (kept here because FileSystemWatcher setup is orchestrator-level) ---
+
+    private void WatchCopilotSessionDirectory(string sessionDir)
+    {
+        var watchKey = "copilot:" + sessionDir;
+        if (_watchers.ContainsKey(watchKey))
+            return;
+
+        var eventsFile = Path.Combine(sessionDir, "events.jsonl");
+        if (!File.Exists(eventsFile)) return;
+
+        try
+        {
+            var watcher = new FileSystemWatcher(sessionDir, "events.jsonl")
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                EnableRaisingEvents = true
+            };
+
+            watcher.Changed += OnTranscriptFileChanged;
+
+            _watchers[watchKey] = watcher;
+            _logger.LogDebug("Watching Copilot session {Dir}", sessionDir);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to watch Copilot session directory {Dir}", sessionDir);
+        }
+    }
+
+    private void OnCopilotSessionCreated(object sender, FileSystemEventArgs e)
+    {
+        if (Directory.Exists(e.FullPath))
+        {
+            WatchCopilotSessionDirectory(e.FullPath);
+        }
     }
 
     public void Dispose()
@@ -331,6 +444,9 @@ public class TranscriptEntry
     [System.Text.Json.Serialization.JsonPropertyName("data")]
     public JsonElement? Data { get; set; }
 
+    [System.Text.Json.Serialization.JsonPropertyName("provider")]
+    public string? Provider { get; set; }
+
     /// <summary>
     /// Extracts a display-friendly summary of the message content.
     /// </summary>
@@ -387,6 +503,11 @@ public class ClaudeProject
 {
     public string Name { get; set; } = string.Empty;
     public string Path { get; set; } = string.Empty;
+    public string Provider { get; set; } = "claude";
+    public string? Cwd { get; set; }
+    public string? GitRoot { get; set; }
+    public string? Branch { get; set; }
+    public string? Repository { get; set; }
     public List<ClaudeSession> Sessions { get; set; } = new();
 }
 
@@ -396,4 +517,9 @@ public class ClaudeSession
     public string FilePath { get; set; } = string.Empty;
     public DateTime LastModified { get; set; }
     public long SizeBytes { get; set; }
+    public string Provider { get; set; } = "claude";
+    public string? Cwd { get; set; }
+    public string? GitRoot { get; set; }
+    public string? Branch { get; set; }
+    public string? Repository { get; set; }
 }

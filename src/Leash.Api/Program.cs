@@ -111,10 +111,16 @@ if (!Directory.Exists(promptsDir))
     Directory.CreateDirectory(promptsDir);
 if (Directory.GetFiles(promptsDir, "*.txt").Length == 0)
 {
-    var defaultPromptsDir = Path.Combine(AppContext.BaseDirectory, "prompts");
-    if (!Directory.Exists(defaultPromptsDir))
-        defaultPromptsDir = Path.Combine(Directory.GetCurrentDirectory(), "prompts");
-    if (Directory.Exists(defaultPromptsDir))
+    // Try multiple locations for default prompt templates
+    var candidateDirs = new[]
+    {
+        Path.Combine(AppContext.BaseDirectory, "prompts"),
+        Path.Combine(Directory.GetCurrentDirectory(), "prompts"),
+        Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "prompts"),
+        Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "prompts"),
+    };
+    var defaultPromptsDir = candidateDirs.FirstOrDefault(Directory.Exists);
+    if (defaultPromptsDir != null)
     {
         foreach (var file in Directory.GetFiles(defaultPromptsDir, "*.txt"))
         {
@@ -161,7 +167,14 @@ builder.Services.AddSingleton(sp =>
     new PromptTemplateService(promptsDir, sp.GetRequiredService<ILogger<PromptTemplateService>>()));
 
 builder.Services.AddSingleton(sp =>
-    new TranscriptWatcher(sp.GetRequiredService<ILogger<TranscriptWatcher>>()));
+    new TranscriptWatcher(
+        sp.GetRequiredService<Leash.Api.Services.Harness.HarnessClientRegistry>(),
+        sp.GetRequiredService<ILogger<TranscriptWatcher>>()));
+
+// Harness client abstraction: register individual clients and the registry
+builder.Services.AddSingleton<Leash.Api.Services.Harness.IHarnessClient, Leash.Api.Services.Harness.ClaudeHarnessClient>();
+builder.Services.AddSingleton<Leash.Api.Services.Harness.IHarnessClient, Leash.Api.Services.Harness.CopilotHarnessClient>();
+builder.Services.AddSingleton<Leash.Api.Services.Harness.HarnessClientRegistry>();
 
 builder.Services.AddSingleton<HookHandlerFactory>(sp =>
     new HookHandlerFactory(

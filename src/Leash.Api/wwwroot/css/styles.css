@@ -2416,12 +2416,13 @@ kbd {
     color: var(--text-faint);
     border-bottom: 1px solid var(--border-color);
 }
+.log-columns-header span { text-align: center; }
 .log-columns-header span:nth-child(1) { width: 80px; flex-shrink: 0; }  /* Time */
 .log-columns-header span:nth-child(2) { width: 35px; flex-shrink: 0; }  /* Client */
-.log-columns-header span:nth-child(3) { width: 100px; flex-shrink: 0; } /* Type */
+.log-columns-header span:nth-child(3) { width: 120px; flex-shrink: 0; } /* Type */
 .log-columns-header span:nth-child(4) { width: 150px; flex-shrink: 0; }  /* Tool */
 .log-columns-header span:nth-child(5) { flex: 1; }                      /* Details */
-.log-columns-header span:nth-child(6) { width: 80px; flex-shrink: 0; }  /* Decision */
+.log-columns-header span:nth-child(6) { width: 100px; flex-shrink: 0; }  /* Decision */
 .log-columns-header span:nth-child(7) { width: 36px; flex-shrink: 0; }  /* Score */
 .log-columns-header span:nth-child(8) { width: 70px; flex-shrink: 0; }  /* Session */
 .log-columns-header span:nth-child(9) { width: 16px; flex-shrink: 0; }  /* Expand */
@@ -2444,11 +2445,11 @@ kbd {
     transition: background 0.15s;
     white-space: nowrap;
 }
-.log-entry-detailed > .log-header .log-time { width: 80px; flex-shrink: 0; font-size: 0.9em; text-align: center; }
+.log-entry-detailed > .log-header .log-time { width: 80px; flex-shrink: 0; font-size: 0.9em; text-align: left; }
 .log-entry-detailed > .log-header .log-provider-badge { width: 35px; flex-shrink: 0; text-align: center; }
-.log-entry-detailed > .log-header .log-type-badge { width: 120px; flex-shrink: 0; text-align: center; font-size: 0.7em; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
-.log-entry-detailed > .log-header .log-tool { width: 150px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
-.log-entry-detailed > .log-header .log-request-preview { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.log-entry-detailed > .log-header .log-type-badge { width: 120px; flex-shrink: 0; text-align: left; font-size: 0.7em; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+.log-entry-detailed > .log-header .log-tool { width: 150px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.log-entry-detailed > .log-header .log-request-preview { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .log-entry-detailed > .log-header .log-decision { width: 100px; flex-shrink: 0; text-align: center; box-sizing: border-box; }
 .log-entry-detailed > .log-header .log-score { width: 36px; flex-shrink: 0; text-align: center; }
 .log-entry-detailed > .log-header .log-session { width: 70px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; margin-left: 0; text-align: center; }

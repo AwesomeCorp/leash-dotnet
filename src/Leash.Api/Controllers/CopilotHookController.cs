@@ -1,6 +1,8 @@
 using Leash.Api.Handlers;
 using Leash.Api.Models;
 using Leash.Api.Services;
+using Leash.Api.Services.Harness;
+using Leash.Api.Services.Tray;
 using Leash.Api.Security;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
@@ -15,29 +17,47 @@ namespace Leash.Api.Controllers;
 [Route("api/hooks")]
 public class CopilotHookController : ControllerBase
 {
+    private readonly IHarnessClient _client;
     private readonly Leash.Api.Services.ConfigurationManager _configManager;
     private readonly SessionManager _sessionManager;
     private readonly HookHandlerFactory _handlerFactory;
     private readonly ProfileService _profileService;
     private readonly AdaptiveThresholdService _adaptiveService;
     private readonly EnforcementService _enforcementService;
+    private readonly TriggerService _triggerService;
+    private readonly ConsoleStatusService _consoleStatus;
+    private readonly ITrayService _trayService;
+    private readonly INotificationService _notificationService;
+    private readonly PendingDecisionService _pendingDecisionService;
     private readonly ILogger<CopilotHookController> _logger;
 
     public CopilotHookController(
+        HarnessClientRegistry clientRegistry,
         Leash.Api.Services.ConfigurationManager configManager,
         SessionManager sessionManager,
         HookHandlerFactory handlerFactory,
         ProfileService profileService,
         AdaptiveThresholdService adaptiveService,
         EnforcementService enforcementService,
+        TriggerService triggerService,
+        ConsoleStatusService consoleStatus,
+        ITrayService trayService,
+        INotificationService notificationService,
+        PendingDecisionService pendingDecisionService,
         ILogger<CopilotHookController> logger)
     {
+        _client = clientRegistry.GetRequired("copilot");
         _configManager = configManager;
         _sessionManager = sessionManager;
         _handlerFactory = handlerFactory;
         _profileService = profileService;
         _adaptiveService = adaptiveService;
         _enforcementService = enforcementService;
+        _triggerService = triggerService;
+        _consoleStatus = consoleStatus;
+        _trayService = trayService;
+        _notificationService = notificationService;
+        _pendingDecisionService = pendingDecisionService;
         _logger = logger;
     }
 
@@ -57,11 +77,8 @@ public class CopilotHookController : ControllerBase
         if (string.IsNullOrWhiteSpace(@event))
             return BadRequest(new { error = "event query parameter is required" });
 
-        // Map Copilot event names to normalized names
-        var normalizedEvent = NormalizeCopilotEvent(@event);
-
-        // Map raw Copilot input to our HookInput
-        var input = MapCopilotInput(rawInput, normalizedEvent);
+        // Map raw Copilot input to our HookInput (includes event normalization)
+        var input = _client.MapInput(rawInput, @event);
 
         if (string.IsNullOrWhiteSpace(input.SessionId))
         {
@@ -79,10 +96,10 @@ public class CopilotHookController : ControllerBase
 
         try
         {
-            _logger.LogInformation("Copilot hook {Event} for {Tool}", normalizedEvent, input.ToolName ?? "unknown");
+            _logger.LogInformation("Copilot hook {Event} for {Tool}", input.HookEventName, input.ToolName ?? "unknown");
 
             var appConfig = _configManager.GetConfiguration();
-            var isEnforced = _enforcementService.IsEnforced;
+            var mode = _enforcementService.Mode;
 
             // Check if Copilot integration is enabled
             if (!appConfig.Copilot.Enabled)
@@ -92,15 +109,15 @@ public class CopilotHookController : ControllerBase
                 return Content("{}", "application/json");
             }
 
-            // If not enforced AND analysis disabled in observe mode, just log
-            if (!isEnforced && !appConfig.AnalyzeInObserveMode)
+            // If observe mode AND analysis disabled, just log
+            if (mode == "observe" && !appConfig.AnalyzeInObserveMode)
             {
                 await TryLogEventAsync(input, null, null, cancellationToken);
                 return Content("{}", "application/json");
             }
 
-            // Find matching handler (copilot-specific first, then shared)
-            var handler = _configManager.FindMatchingHandler(input.HookEventName, input.ToolName, provider: "copilot");
+            // Find matching handler
+            var handler = _configManager.FindMatchingHandler(input.HookEventName, input.ToolName, provider: _client.Name);
 
             if (handler == null || handler.Mode == "log-only")
             {
@@ -130,20 +147,56 @@ public class CopilotHookController : ControllerBase
 
             var output = await handlerInstance.HandleAsync(input, handler, context, cancellationToken);
 
-            // Log the event
+            // Log the event (with full analysis results regardless of enforcement)
             await TryLogEventAsync(input, output, handler, cancellationToken);
 
-            // If enforcement is OFF, return empty JSON
-            if (!isEnforced)
-            {
-                _logger.LogDebug("Observe mode - analyzed {Tool} (score={Score}) but not enforcing",
-                    input.ToolName, output.SafetyScore);
-                return Content("{}", "application/json");
-            }
+            // Decision logic based on 3-state enforcement mode
+            var trayConfig = appConfig.Tray;
 
-            // Enforcement ON -- return Copilot-formatted decision
-            var copilotResponse = FormatCopilotResponse(normalizedEvent, output);
-            return Content(JsonSerializer.Serialize(copilotResponse), "application/json");
+            switch (mode)
+            {
+                case "observe":
+                    _logger.LogDebug("Observe mode - analyzed {Tool} (score={Score}) but not enforcing",
+                        input.ToolName, output.SafetyScore);
+                    ShowPassiveNotification(trayConfig, output, input);
+                    return Content("{}", "application/json");
+
+                case "approve-only":
+                    // Auto-approve safe requests, fall through on anything uncertain/denied
+                    if (output.AutoApprove)
+                    {
+                        var approveResponse = _client.FormatResponse(@event, output);
+                        return Content(JsonSerializer.Serialize(approveResponse), "application/json");
+                    }
+
+                    // Try interactive tray decision for uncertain scores
+                    var trayResult = await RequestTrayDecisionAsync(trayConfig, output, input, @event);
+                    if (trayResult != null)
+                        return Content(JsonSerializer.Serialize(trayResult), "application/json");
+
+                    _logger.LogDebug("Approve-only mode - {Tool} not safe enough (score={Score}), falling through",
+                        input.ToolName, output.SafetyScore);
+                    return Content("{}", "application/json");
+
+                case "enforce":
+                default:
+                    // Full enforcement: allow safe, deny dangerous, ask user for uncertain
+                    if (output.AutoApprove)
+                    {
+                        var enforceResponse = _client.FormatResponse(@event, output);
+                        return Content(JsonSerializer.Serialize(enforceResponse), "application/json");
+                    }
+
+                    // Try interactive tray decision for uncertain scores before denying
+                    var enforceTrayResult = await RequestTrayDecisionAsync(trayConfig, output, input, @event);
+                    if (enforceTrayResult != null)
+                        return Content(JsonSerializer.Serialize(enforceTrayResult), "application/json");
+
+                    // No tray override — deny
+                    ShowPassiveNotification(trayConfig, output, input);
+                    var denyResponse = _client.FormatResponse(@event, output);
+                    return Content(JsonSerializer.Serialize(denyResponse), "application/json");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -157,125 +210,159 @@ public class CopilotHookController : ControllerBase
     }
 
     /// <summary>
-    /// Normalizes Copilot event names to our internal format.
-    /// Copilot uses camelCase (preToolUse), we use PascalCase (PreToolUse).
+    /// Attempts an interactive tray decision for uncertain scores in approve-only mode.
     /// </summary>
-    private static string NormalizeCopilotEvent(string copilotEvent)
+    private async Task<object?> RequestTrayDecisionAsync(TrayConfig trayConfig, HookOutput output, HookInput input, string hookEvent)
     {
-        return copilotEvent switch
+        if (!trayConfig.Enabled || !trayConfig.InteractiveEnabled)
+            return null;
+
+        if (output.SafetyScore < trayConfig.InteractiveScoreMin || output.SafetyScore > trayConfig.InteractiveScoreMax)
+            return null;
+
+        await EnsureTrayStartedAsync();
+
+        try
         {
-            "preToolUse" => "PreToolUse",
-            "postToolUse" => "PostToolUse",
-            "preToolUseFailure" => "PreToolUse",
-            "postToolUseFailure" => "PostToolUseFailure",
-            _ => char.ToUpperInvariant(copilotEvent[0]) + copilotEvent[1..] // Best-effort PascalCase
-        };
-    }
+            var info = BuildNotificationInfo(output, input, NotificationLevel.Warning);
+            var timeout = TimeSpan.FromSeconds(Math.Min(trayConfig.InteractiveTimeoutSeconds, 25));
 
-    /// <summary>
-    /// Maps Copilot JSON format to our HookInput.
-    /// Copilot differences: toolArgs is a JSON string, timestamp is epoch ms.
-    /// </summary>
-    private static HookInput MapCopilotInput(JsonElement raw, string normalizedEvent)
-    {
-        var input = new HookInput
-        {
-            HookEventName = normalizedEvent,
-            Provider = "copilot",
-            Timestamp = DateTime.UtcNow
-        };
+            var (decisionId, pendingTask) = _pendingDecisionService.CreatePending(info, timeout);
 
-        // Session ID (copilot may not always provide one)
-        if (raw.TryGetProperty("sessionId", out var sid))
-            input.SessionId = sid.GetString() ?? string.Empty;
-        else if (raw.TryGetProperty("session_id", out var sid2))
-            input.SessionId = sid2.GetString() ?? string.Empty;
-
-        // Tool name
-        if (raw.TryGetProperty("toolName", out var tn))
-            input.ToolName = tn.GetString();
-        else if (raw.TryGetProperty("tool_name", out var tn2))
-            input.ToolName = tn2.GetString();
-
-        // Tool args -- Copilot sends toolArgs as a JSON string, parse it to JsonElement
-        if (raw.TryGetProperty("toolArgs", out var ta))
-        {
-            if (ta.ValueKind == JsonValueKind.String)
+            _ = Task.Run(async () =>
             {
-                var argsStr = ta.GetString();
-                if (!string.IsNullOrEmpty(argsStr))
+                try
                 {
-                    try
-                    {
-                        input.ToolInput = JsonDocument.Parse(argsStr).RootElement;
-                    }
-                    catch (JsonException)
-                    {
-                        // If it's not valid JSON, wrap it as a command string
-                        input.ToolInput = JsonDocument.Parse($"{{\"command\":\"{argsStr.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"}}").RootElement;
-                    }
+                    var nativeResult = await _notificationService.ShowInteractiveAsync(
+                        info with { DecisionId = decisionId }, timeout);
+                    if (nativeResult.HasValue)
+                        _pendingDecisionService.TryResolve(decisionId, nativeResult.Value);
                 }
-            }
-            else
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Native interactive notification failed");
+                }
+            });
+
+            var decision = await pendingTask;
+
+            if (decision == TrayDecision.Approve)
             {
-                input.ToolInput = ta;
+                _logger.LogInformation("Tray: user approved {Tool} (score={Score})", input.ToolName, output.SafetyScore);
+                output.AutoApprove = true;
+                await TryLogTrayDecisionAsync(input, output, "tray-approved", CancellationToken.None);
+                return _client.FormatResponse(hookEvent, output);
             }
-        }
-        else if (raw.TryGetProperty("toolInput", out var ti))
-        {
-            input.ToolInput = ti;
-        }
-
-        // Working directory
-        if (raw.TryGetProperty("cwd", out var cwd))
-            input.Cwd = cwd.GetString();
-
-        // Timestamp -- Copilot may send epoch milliseconds
-        if (raw.TryGetProperty("timestamp", out var ts))
-        {
-            if (ts.ValueKind == JsonValueKind.Number && ts.TryGetInt64(out var epochMs))
+            else if (decision == TrayDecision.Deny)
             {
-                input.Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(epochMs).UtcDateTime;
+                _logger.LogInformation("Tray: user denied {Tool} (score={Score})", input.ToolName, output.SafetyScore);
+                output.AutoApprove = false;
+                await TryLogTrayDecisionAsync(input, output, "tray-denied", CancellationToken.None);
+                return _client.FormatResponse(hookEvent, output);
             }
-        }
 
-        return input;
+            await TryLogTrayDecisionAsync(input, output, "tray-timeout", CancellationToken.None);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Tray interactive decision failed for {Tool}", input.ToolName);
+            return null;
+        }
     }
 
-    /// <summary>
-    /// Formats response in Copilot's expected format.
-    /// Copilot expects: { "permissionDecision": "allow|deny|ask", "permissionDecisionReason": "..." }
-    /// </summary>
-    private static object FormatCopilotResponse(string hookEvent, HookOutput output)
+    private async Task EnsureTrayStartedAsync()
     {
-        if (hookEvent == "PreToolUse")
-        {
-            string decision;
-            if (output.SafetyScore >= output.Threshold)
-                decision = "allow";
-            else if (output.SafetyScore < 30)
-                decision = "deny";
-            else
-                decision = "ask";
+        if (_trayService.IsAvailable) return;
+        try { await _trayService.StartAsync(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Failed to lazy-start tray service"); }
+    }
 
-            var response = new Dictionary<string, object>
+    private void ShowPassiveNotification(TrayConfig trayConfig, HookOutput output, HookInput input)
+    {
+        if (!trayConfig.Enabled) return;
+
+        var isDenied = !output.AutoApprove && output.SafetyScore < 30;
+        var isUncertain = !output.AutoApprove && output.SafetyScore >= 30;
+
+        if (isDenied && !trayConfig.AlertOnDenied) return;
+        if (isUncertain && !trayConfig.AlertOnUncertain) return;
+        if (output.AutoApprove) return;
+
+        var level = isDenied ? NotificationLevel.Danger : NotificationLevel.Warning;
+        var info = BuildNotificationInfo(output, input, level);
+
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                ["permissionDecision"] = decision
+                await EnsureTrayStartedAsync();
+                await _notificationService.ShowAlertAsync(info);
+            }
+            catch { /* non-fatal */ }
+        });
+    }
+
+    private static NotificationInfo BuildNotificationInfo(HookOutput output, HookInput input, NotificationLevel level)
+    {
+        var providerLabel = input.Provider == "copilot" ? "Copilot" : "Claude";
+        var title = level == NotificationLevel.Danger
+            ? $"[{providerLabel}] DENIED: {input.ToolName ?? "unknown"}"
+            : $"[{providerLabel}] Review: {input.ToolName ?? "unknown"} (score {output.SafetyScore})";
+
+        var body = $"Score: {output.SafetyScore} | {output.Category ?? "unknown"}\n"
+            + (output.Reasoning?.Length > 200 ? output.Reasoning[..197] + "..." : output.Reasoning ?? "");
+
+        // Extract command preview from tool input
+        string? commandPreview = null;
+        if (input.ToolInput.HasValue)
+        {
+            var ti = input.ToolInput.Value;
+            if (ti.TryGetProperty("command", out var cmd))
+                commandPreview = cmd.GetString();
+            else if (ti.TryGetProperty("description", out var desc))
+                commandPreview = desc.GetString();
+            else if (ti.TryGetProperty("file_path", out var fp))
+                commandPreview = fp.GetString();
+        }
+
+        return new NotificationInfo
+        {
+            Title = title,
+            Body = body,
+            ToolName = input.ToolName,
+            SafetyScore = output.SafetyScore,
+            Reasoning = output.Reasoning,
+            Category = output.Category,
+            Provider = input.Provider,
+            CommandPreview = commandPreview,
+            Level = level
+        };
+    }
+
+    private async Task TryLogTrayDecisionAsync(HookInput input, HookOutput output, string decision, CancellationToken ct)
+    {
+        try
+        {
+            var evt = new SessionEvent
+            {
+                Type = "TrayDecision",
+                ToolName = input.ToolName,
+                ToolInput = input.ToolInput,
+                Decision = decision,
+                SafetyScore = output.SafetyScore,
+                Reasoning = output.Reasoning,
+                Category = output.Category,
+                Provider = _client.Name
             };
 
-            if (decision != "allow")
-            {
-                var reasoning = output.Reasoning.Length > 1000
-                    ? output.Reasoning[..1000]
-                    : output.Reasoning;
-                response["permissionDecisionReason"] = reasoning;
-            }
-
-            return response;
+            await _sessionManager.RecordEventAsync(input.SessionId, evt, ct);
+            _consoleStatus.RecordEvent(decision, input.ToolName, output.SafetyScore, null);
         }
-
-        // PostToolUse and others -- no decision needed
-        return new { };
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to log tray decision for session {SessionId}", input.SessionId);
+        }
     }
 
     private async Task TryLogEventAsync(HookInput input, HookOutput? output, HandlerConfig? handler, CancellationToken ct)
@@ -289,6 +376,13 @@ public class CopilotHookController : ControllerBase
                 _ => "denied"
             };
 
+            string? responseJson = null;
+            if (output != null)
+            {
+                var clientResponse = _client.FormatResponse(input.HookEventName, output);
+                responseJson = JsonSerializer.Serialize(clientResponse, new JsonSerializerOptions { WriteIndented = true });
+            }
+
             var evt = new SessionEvent
             {
                 Type = input.HookEventName,
@@ -301,10 +395,18 @@ public class CopilotHookController : ControllerBase
                 HandlerName = handler?.Name,
                 PromptTemplate = handler?.PromptTemplate != null ? Path.GetFileName(handler.PromptTemplate) : null,
                 Threshold = output?.Threshold ?? handler?.Threshold,
-                Provider = "copilot"
+                Provider = _client.Name,
+                ElapsedMs = output?.ElapsedMs,
+                ResponseJson = responseJson
             };
 
             await _sessionManager.RecordEventAsync(input.SessionId, evt, ct);
+
+            // Fire trigger webhooks
+            _triggerService.FireAsync(decision, output?.Category, evt);
+
+            // Update console status
+            _consoleStatus.RecordEvent(decision, input.ToolName, output?.SafetyScore, output?.ElapsedMs);
 
             if (output != null && !string.IsNullOrEmpty(input.ToolName))
             {
