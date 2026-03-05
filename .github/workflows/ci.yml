@@ -59,6 +59,7 @@ jobs:
           dotnet-quality: 'preview'
 
       - name: Publish ${{ matrix.rid }}
+        shell: bash
         run: |
           dotnet publish src/Leash.Api/Leash.Api.csproj \
             --configuration Release \
@@ -67,6 +68,7 @@ jobs:
             --output ./publish/${{ matrix.rid }}
 
       - name: Include prompt templates
+        shell: bash
         run: cp -r prompts ./publish/${{ matrix.rid }}/prompts
 
       - name: Package artifact (tar.gz)
